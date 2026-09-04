@@ -75,7 +75,7 @@ npx vercel dev
 
 Notes for serverless:
 
-- Enrich / web-email can be slow; `vercel.json` sets `maxDuration` to **60s**. Raise it in Project Settings if needed.
+- Enrich / web-email can be slow; `vercel.json` sets `maxDuration` to **10s** (Hobby default cap without Fluid). Raise it on Pro / Fluid if needed.
 - The in-memory About cache is **per warm instance** (not shared across all regions).
 - Hobby plans without Fluid compute may need a lower concurrency or fewer enrich IDs if you hit timeouts.
 
