@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections import defaultdict
 from typing import Any, Literal
 
 from fastapi import HTTPException
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 
 from app.config import get_youtube_api_key
 from app.models.schemas import CreatorResult, SearchResponse, SocialLink, VideoResult
 from app.services.bio_parser import is_india_or_unknown, parse_bio
 
 SortOption = Literal["relevance", "subscribers", "views"]
+
+_YT_API = "https://www.googleapis.com/youtube/v3"
+_UA = "kol-yt-search/0.1"
 
 
 def _upstream_error() -> HTTPException:
@@ -26,12 +31,7 @@ class YouTubeService:
         api_key = get_youtube_api_key()
         if not api_key:
             raise _upstream_error()
-        self._client = build(
-            "youtube",
-            "v3",
-            developerKey=api_key,
-            cache_discovery=False,
-        )
+        self._api_key = api_key
 
     def search_creators(
         self,
@@ -74,32 +74,45 @@ class YouTubeService:
             )
         except HTTPException:
             raise
-        except HttpError:
-            raise _upstream_error() from None
         except Exception:
             raise _upstream_error() from None
 
+    def _get(self, endpoint: str, params: dict[str, Any]) -> dict[str, Any]:
+        query = dict(params)
+        query["key"] = self._api_key
+        url = f"{_YT_API}/{endpoint}?{urllib.parse.urlencode(query)}"
+        req = urllib.request.Request(url, headers={"User-Agent": _UA})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            # Surface quota / auth failures as upstream errors.
+            raise _upstream_error() from exc
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            raise _upstream_error() from exc
+
     def _search_videos(self, query: str) -> list[dict[str, Any]]:
-        response = (
-            self._client.search()
-            .list(
-                part="snippet",
-                q=query,
-                type="video",
-                maxResults=50,
-                order="relevance",
-            )
-            .execute()
+        response = self._get(
+            "search",
+            {
+                "part": "snippet",
+                "q": query,
+                "type": "video",
+                "maxResults": 50,
+                "order": "relevance",
+            },
         )
         return response.get("items", [])
 
     def _fetch_videos(self, video_ids: list[str]) -> list[dict[str, Any]]:
         videos: list[dict[str, Any]] = []
         for chunk in _chunked(video_ids, 50):
-            response = (
-                self._client.videos()
-                .list(part="snippet,statistics,contentDetails", id=",".join(chunk))
-                .execute()
+            response = self._get(
+                "videos",
+                {
+                    "part": "snippet,statistics,contentDetails",
+                    "id": ",".join(chunk),
+                },
             )
             for item in response.get("items", []):
                 snippet = item.get("snippet") or {}
@@ -122,10 +135,12 @@ class YouTubeService:
     def _fetch_channels(self, channel_ids: list[str]) -> dict[str, dict[str, Any]]:
         channels: dict[str, dict[str, Any]] = {}
         for chunk in _chunked(channel_ids, 50):
-            response = (
-                self._client.channels()
-                .list(part="snippet,statistics", id=",".join(chunk))
-                .execute()
+            response = self._get(
+                "channels",
+                {
+                    "part": "snippet,statistics",
+                    "id": ",".join(chunk),
+                },
             )
             for item in response.get("items", []):
                 channel_id = item.get("id", "")
