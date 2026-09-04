@@ -11,7 +11,6 @@ Single FastAPI process serves both the JSON API and the web UI. No database, no 
 **1. Install**
 
 ```bash
-cd backend
 pip3 install -r requirements.txt
 ```
 
@@ -21,7 +20,7 @@ pip3 install -r requirements.txt
 cp .env.example .env
 ```
 
-Put your key in `backend/.env`:
+Put your key in `.env` at the repo root:
 
 ```env
 YOUTUBE_API_KEY=your_api_key_here
@@ -32,7 +31,6 @@ Get a key from [Google Cloud → YouTube Data API v3](https://console.cloud.goog
 **3. Start**
 
 ```bash
-cd backend
 python3 run.py
 ```
 
@@ -58,24 +56,26 @@ curl -s 'http://127.0.0.1:8000/api/search?q=cricket' | python3 -m json.tool
 
 1. Push this repo to GitHub/GitLab/Bitbucket.
 2. In Vercel → **Add New Project** → import the repo.
-3. Set **Root Directory** to `backend` (important — the FastAPI app lives there).
-4. Vercel should detect FastAPI from `app/main.py` (`pyproject.toml` sets `entrypoint = "app.main:app"`).
-5. Add Environment Variable:
+3. Project settings:
+   - **Root Directory:** `./` (repo root)
+   - **Framework Preset:** Other
+   - **Build Command:** leave empty
+   - **Install Command:** leave empty (Vercel installs from `requirements.txt`)
+4. Add Environment Variable:
    - `YOUTUBE_API_KEY` = your YouTube Data API v3 key
-6. Deploy.
+5. Deploy.
 
-Do **not** add a `functions` pattern for `api/*` — with the FastAPI preset, `api/` files are not separate Serverless Functions and that config causes deploy errors.
+The serverless entrypoint is [`api/index.py`](api/index.py). `vercel.json` rewrites all routes to it and bundles `app/**` (templates + static).
 
 Local check with Vercel CLI (optional):
 
 ```bash
-cd backend
 npx vercel dev
 ```
 
 Notes for serverless:
 
-- Enrich / web-email can be slow; on Vercel, raise **Function Max Duration** in Project Settings if searches time out (Fluid compute defaults are usually enough).
+- Enrich / web-email can be slow; `vercel.json` sets `maxDuration` to **60s**. Raise it in Project Settings if needed.
 - The in-memory About cache is **per warm instance** (not shared across all regions).
 - Hobby plans without Fluid compute may need a lower concurrency or fewer enrich IDs if you hit timeouts.
 
@@ -83,7 +83,7 @@ Notes for serverless:
 
 | Setting | Value |
 |---------|--------|
-| Root / working directory | `backend/` |
+| Root / working directory | repo root |
 | Start command | `python run.py` |
 | Health check | `GET /health` |
 | Required secret | `YOUTUBE_API_KEY` |
@@ -161,25 +161,31 @@ Browser
 ### Project layout
 
 ```text
-backend/
+.
+├── api/
+│   └── index.py           # Vercel serverless entry (exports FastAPI app)
+├── app/
+│   ├── main.py            # FastAPI app
+│   ├── routes/search.py   # /search /enrich /export
+│   ├── services/
+│   │   ├── youtube.py
+│   │   ├── bio_parser.py
+│   │   ├── channel_links.py
+│   │   ├── web_email.py
+│   │   ├── about_cache.py
+│   │   └── enrich.py
+│   ├── models/schemas.py
+│   ├── templates/index.html
+│   └── static/
 ├── run.py                 # local / PaaS entry
-├── vercel.json
-├── pyproject.toml         # Vercel FastAPI entrypoint (app.main:app)
-├── .python-version        # Python 3.12 on Vercel
 ├── requirements.txt
-└── app/
-    ├── main.py            # FastAPI app (Vercel entrypoint)
-    ├── routes/search.py   # /search /enrich /export
-    ├── services/
-    │   ├── youtube.py
-    │   ├── bio_parser.py
-    │   ├── channel_links.py
-    │   ├── web_email.py
-    │   ├── about_cache.py
-    │   └── enrich.py
-    ├── models/schemas.py
-    ├── templates/index.html
-    └── static/
+├── pyproject.toml
+├── .python-version
+├── runtime.txt
+├── Procfile
+├── vercel.json
+├── .vercelignore
+└── .env.example
 ```
 
 ---
