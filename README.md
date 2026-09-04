@@ -1,6 +1,6 @@
 # YouTube Creator Search
 
-Keyword → YouTube Data API v3 → India/unknown country filter → contacts from bio → ranked creators.
+Keyword → YouTube Data API v3 → India/unknown country filter → fast creator pool → client sort/limit → lazy contact enrich.
 
 Single FastAPI process serves both the JSON API and the web UI. No database, no auth, no Node/npm.
 
@@ -47,7 +47,7 @@ Dev reload: `RELOAD=true python3 run.py`
 | Health | http://127.0.0.1:8000/health |
 
 ```bash
-curl -s 'http://127.0.0.1:8000/api/search?q=cricket&limit=5&sort=relevance' | python3 -m json.tool
+curl -s 'http://127.0.0.1:8000/api/search?q=cricket' | python3 -m json.tool
 ```
 
 ---
@@ -66,22 +66,33 @@ curl -s 'http://127.0.0.1:8000/api/search?q=cricket&limit=5&sort=relevance' | py
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `YOUTUBE_API_KEY` | **yes** | — | YouTube Data API v3 key |
-| `PORT` | no | `8000` | HTTP port |
+| `PORT` | no | `8000` | Listen port |
 | `HOST` | no | `0.0.0.0` | Bind address |
 | `RELOAD` | no | `false` | Dev reload only |
 
 ---
 
+## Latency model
+
+Search is intentionally split into a **fast path** and a **lazy enrich** path:
+
+1. **`GET /api/search`** — only YouTube Data API (`search` + `videos` + `channels`) + bio regex + India filter. Returns the **full** India/unknown creator pool. Typically a few seconds.
+2. **Browser** — sorts and slices (5/10/15) **locally**. Changing sort/limit does **not** call search again.
+3. **`GET /api/enrich?ids=...`** — fetches About / More info contacts **only for visible channels** (max 15), in **parallel**, with a **1-hour in-memory cache**. Uses YouTube **Innertube** (`browse` + About continuation) first, then HTML `ytInitialData` as fallback. Skips channels that already have contacts from the description.
+4. **Export CSV** (UI) — builds CSV from the current on-screen rows (instant). Server `/api/export` still exists for API clients: fast search → sort/slice → enrich only those rows.
+
+---
+
 ## What it does
 
-1. Search YouTube for up to **50 relevant videos** for the query.
-2. Load video + channel statistics and channel **description** / **country**.
-3. Parse each channel bio for **email**, **phone**, and **social links**.
-4. **Hard filter:** keep only creators with `country == IN` **or** unknown/missing country. Drop set countries that are not India.
-5. Sort and return up to **N** creators (default 5, max 15).
-6. Optionally **export CSV** with contact fields.
+1. Search YouTube for up to **50 relevant videos**.
+2. Load video + channel statistics and channel description/country.
+3. Parse description for email / phone / socials.
+4. Keep creators with `country == IN` or unknown country.
+5. Return the full filtered pool to the UI.
+6. UI sorts/limits locally; then enriches contacts for visible cards.
 
-### Ranking / sort
+### Ranking / sort (client-side)
 
 | `sort` | Order |
 |--------|--------|
@@ -91,27 +102,18 @@ curl -s 'http://127.0.0.1:8000/api/search?q=cricket&limit=5&sort=relevance' | py
 
 ### Country filter
 
-Uses YouTube `channels.list` → `snippet.country` (ISO code).
-
 - Keep: `IN`, missing, empty
-- Drop: any other set country (e.g. `US`, `GB`)
+- Drop: any other set country
 
 ### Contact extraction
 
-From channel **description** text only (Data API; no About-page HTML scrape):
+Kept contacts only:
 
-- First email match
-- First plausible phone (Indian `+91` / 10-digit and general international patterns)
-- Social URLs and labeled handles: Instagram, X/Twitter, Facebook, LinkedIn, Telegram, WhatsApp, YouTube, TikTok, Threads, plus generic websites
+- **Email** (channel description + About / More info text)
+- **Phone** (same sources)
+- **X**, **Telegram**, **Instagram** (description + About links)
 
-Missing values stay empty/`null` — nothing is invented.
-
-### UI controls
-
-- Sort dropdown: Relevance / Subscribers / Views
-- Channels dropdown: 5 / 10 / 15
-- Export CSV (after a successful search with results)
-- Per creator: country badge, email, phone, socials, videos
+Other websites are dropped. About/More info is loaded lazily via `/api/enrich` for visible creators missing any of these fields.
 
 ---
 
@@ -120,13 +122,13 @@ Missing values stay empty/`null` — nothing is invented.
 ```text
 Browser
   │
-  ├─ GET /                  → UI (sort, limit, export)
-  ├─ GET /api/search        → JSON creators
-  └─ GET /api/export        → CSV download
-         │
-         └─ YouTubeService.search_creators(q, limit, sort)
-              search.list → videos.list → channels.list
-              parse bio → filter IN|unknown → sort → slice
+  ├─ GET /api/search?q=...     → full India/unknown pool (fast)
+  │     sort/limit in JS
+  │
+  ├─ GET /api/enrich?ids=...   → About socials for visible ids (parallel + cache)
+  │
+  └─ Export CSV                → client CSV of current view
+                                 (or GET /api/export for API clients)
 ```
 
 ### Project layout
@@ -134,15 +136,17 @@ Browser
 ```text
 backend/
 ├── run.py
-├── app/
-│   ├── main.py
-│   ├── routes/search.py      # /api/search + /api/export
-│   ├── services/
-│   │   ├── youtube.py
-│   │   └── bio_parser.py     # email / phone / socials / country helper
-│   ├── models/schemas.py
-│   ├── templates/index.html
-│   └── static/
+└── app/
+    ├── routes/search.py       # /search /enrich /export
+    ├── services/
+    │   ├── youtube.py         # fast YouTube pipeline
+    │   ├── bio_parser.py
+    │   ├── channel_links.py   # Innertube About + HTML fallback
+    │   ├── about_cache.py     # 1h TTL cache
+    │   └── enrich.py          # parallel enrich
+    ├── models/schemas.py
+    ├── templates/index.html
+    └── static/
 ```
 
 ---
@@ -157,85 +161,52 @@ backend/
 
 ### `GET /api/search`
 
+Fast path. Returns the **entire** India/unknown pool (not pre-sliced).
+
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `q` | string | required | Search topic |
-| `limit` | int | `5` | Creators to return (1–15) |
-| `sort` | string | `relevance` | `relevance` \| `subscribers` \| `views` |
-
-**Example**
-
-```bash
-curl -s 'http://127.0.0.1:8000/api/search?q=cricket&limit=10&sort=subscribers'
-```
-
-**Response `200` (shape)**
-
-```json
-{
-  "query": "cricket",
-  "result_count": 50,
-  "sort": "subscribers",
-  "limit": 10,
-  "creators": [
-    {
-      "channel_id": "UC...",
-      "channel_name": "Example",
-      "channel_url": "https://www.youtube.com/channel/UC...",
-      "thumbnail": "https://...",
-      "subscribers": 1200000,
-      "relevant_video_count": 4,
-      "combined_views": 8400000,
-      "country": "IN",
-      "email": "hello@example.com",
-      "phone": "+91 98765 43210",
-      "socials": [
-        { "platform": "instagram", "value": "https://instagram.com/..." }
-      ],
-      "videos": []
-    }
-  ]
-}
-```
-
-`country` is `"IN"` or `null` (unknown). Non-India countries never appear.
+| `limit` | int | `5` | Echoed for clients (1–15); UI slices locally |
+| `sort` | string | `relevance` | Echoed; UI sorts locally |
 
 **Errors:** `400` missing/blank `q`; `502` YouTube/upstream failure.
 
+### `GET /api/enrich`
+
+| Param | Type | Description |
+|-------|------|-------------|
+| `ids` | string | Comma-separated channel IDs (max 15) |
+
+```json
+{
+  "channels": {
+    "UC...": {
+      "socials": [{ "platform": "telegram", "value": "https://t.me/..." }]
+    }
+  }
+}
+```
+
+Per-id failures return empty socials (no batch 502).
+
 ### `GET /api/export`
 
-Same query params as `/api/search`. Returns CSV attachment `creators_export.csv`.
+Same `q` / `limit` / `sort` as search. Fast search → sort/slice → enrich only those rows → CSV.
 
-Columns (exact order):
+Columns:
 
 ```text
 query_used, relevant_video_count, subs, views, socials, mobile number, email, country
-```
-
-| Column | Source |
-|--------|--------|
-| `query_used` | search query |
-| `relevant_video_count` | videos for that creator in the result set |
-| `subs` | channel subscribers (blank if hidden) |
-| `views` | `combined_views` of relevant videos |
-| `socials` | `platform:value` pairs joined by `; ` |
-| `mobile number` | parsed phone |
-| `email` | parsed email |
-| `country` | `IN` or blank if unknown |
-
-```bash
-curl -L -o creators.csv \
-  'http://127.0.0.1:8000/api/export?q=cricket&limit=10&sort=views'
 ```
 
 ---
 
 ## Quota note
 
-≈ **102 units** per search/export call (`search.list` 100 + `videos.list` 1 + `channels.list` 1). Export re-runs the same pipeline.
+≈ **102 units** per search (`search.list` 100 + `videos.list` 1 + `channels.list` 1). Enrich uses Innertube/HTML (no Data API quota). Server export re-runs the fast search + enriches ≤15 channels.
 
 ---
 
 ## Out of scope
 
-Database, auth, Redis, Celery, Docker, AI scoring, scraping YouTube About HTML beyond Data API description/country.
+Database, auth, Redis, Celery, Docker, AI scoring, HTTPS.

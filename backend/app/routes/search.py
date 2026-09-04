@@ -5,8 +5,9 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
-from app.models.schemas import SearchResponse
+from app.models.schemas import EnrichChannelPayload, EnrichResponse, SearchResponse, SocialLink
 from app.services.bio_parser import format_socials_export
+from app.services.enrich import enrich_channel_contacts, enrich_creators_inplace
 from app.services.youtube import get_youtube_service
 
 router = APIRouter()
@@ -26,8 +27,29 @@ def search(
     limit: int = Query(default=5, ge=1, le=15),
     sort: SortOption = Query(default="relevance"),
 ) -> SearchResponse:
+    """Fast path: YouTube API only. Returns full India/unknown pool (no About scrapes)."""
     query = _require_query(q)
     return get_youtube_service().search_creators(query, limit=limit, sort=sort)
+
+
+@router.get("/enrich", response_model=EnrichResponse)
+def enrich(
+    ids: str = Query(default="", description="Comma-separated channel IDs (max 15)"),
+) -> EnrichResponse:
+    channel_ids = [part.strip() for part in ids.split(",") if part.strip()]
+    if not channel_ids:
+        return EnrichResponse(channels={})
+
+    enriched = enrich_channel_contacts(channel_ids)
+    channels = {
+        channel_id: EnrichChannelPayload(
+            email=payload.get("email"),
+            phone=payload.get("phone"),
+            socials=[SocialLink(**item) for item in payload.get("socials") or []],
+        )
+        for channel_id, payload in enriched.items()
+    }
+    return EnrichResponse(channels=channels)
 
 
 @router.get("/export")
@@ -37,7 +59,10 @@ def export_csv(
     sort: SortOption = Query(default="relevance"),
 ) -> StreamingResponse:
     query = _require_query(q)
-    result = get_youtube_service().search_creators(query, limit=limit, sort=sort)
+    service = get_youtube_service()
+    result = service.search_creators(query, limit=limit, sort=sort)
+    creators = service._sort_creators(list(result.creators), sort)[:limit]
+    enrich_creators_inplace(creators)
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)
@@ -53,7 +78,7 @@ def export_csv(
             "country",
         ]
     )
-    for creator in result.creators:
+    for creator in creators:
         writer.writerow(
             [
                 result.query,

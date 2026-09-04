@@ -40,3 +40,13 @@ class SearchResponse(BaseModel):
     sort: SortOption = "relevance"
     limit: int = 5
     creators: list[CreatorResult] = Field(default_factory=list)
+
+
+class EnrichChannelPayload(BaseModel):
+    email: str | None = None
+    phone: str | None = None
+    socials: list[SocialLink] = Field(default_factory=list)
+
+
+class EnrichResponse(BaseModel):
+    channels: dict[str, EnrichChannelPayload] = Field(default_factory=dict)

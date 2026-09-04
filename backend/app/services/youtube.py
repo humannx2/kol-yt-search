@@ -9,8 +9,7 @@ from googleapiclient.errors import HttpError
 
 from app.config import get_youtube_api_key
 from app.models.schemas import CreatorResult, SearchResponse, SocialLink, VideoResult
-from app.services.bio_parser import ParsedSocial, is_india_or_unknown, parse_bio
-from app.services.channel_links import fetch_channel_about_socials
+from app.services.bio_parser import is_india_or_unknown, parse_bio
 
 SortOption = Literal["relevance", "subscribers", "views"]
 
@@ -63,14 +62,15 @@ class YouTubeService:
             channels = self._fetch_channels(channel_ids)
             creators = self._aggregate(videos, channels)
             creators = [c for c in creators if is_india_or_unknown(c.country)]
-            creators = self._sort_creators(creators, sort)
+            # Default order for a stable pool; client applies sort/limit.
+            creators = self._sort_creators(creators, "relevance")
 
             return SearchResponse(
                 query=query,
                 result_count=len(videos),
                 sort=sort,
                 limit=limit,
-                creators=creators[:limit],
+                creators=creators,
             )
         except HTTPException:
             raise
@@ -144,8 +144,6 @@ class YouTubeService:
                 )
                 description = snippet.get("description") or ""
                 bio = parse_bio(description)
-                about_socials = fetch_channel_about_socials(channel_id)
-                socials = _merge_socials(list(bio.socials), about_socials)
                 channels[channel_id] = {
                     "channel_id": channel_id,
                     "channel_name": snippet.get("title") or "",
@@ -155,23 +153,9 @@ class YouTubeService:
                     "country": country,
                     "email": bio.email,
                     "phone": bio.phone,
-                    "socials": socials,
+                    "socials": list(bio.socials),
                 }
         return channels
-
-
-def _merge_socials(
-    primary: list[ParsedSocial], secondary: list[ParsedSocial]
-) -> list[ParsedSocial]:
-    merged: list[ParsedSocial] = []
-    seen: set[tuple[str, str]] = set()
-    for item in [*primary, *secondary]:
-        key = (item.platform, item.value.lower())
-        if key in seen:
-            continue
-        seen.add(key)
-        merged.append(item)
-    return merged
 
     def _aggregate(
         self,
@@ -283,3 +267,9 @@ def get_youtube_service() -> YouTubeService:
     if _service is None:
         _service = YouTubeService()
     return _service
+
+
+def reset_youtube_service() -> None:
+    """Drop the cached client (e.g. after fixing credentials)."""
+    global _service
+    _service = None

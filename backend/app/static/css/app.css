@@ -165,8 +165,10 @@ body {
   color: var(--danger-text);
 }
 
-.results {
-  margin-top: 1.75rem;
+.enrich-hint {
+  margin: 0 0 0.75rem;
+  font-size: 0.8rem;
+  color: var(--muted);
 }
 
 .results-heading {

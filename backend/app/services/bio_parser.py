@@ -4,12 +4,13 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+# Only these socials are kept (plus email / phone as contact fields).
+ALLOWED_SOCIAL_PLATFORMS = frozenset({"x", "telegram", "instagram"})
 
 EMAIL_RE = re.compile(
     r"(?i)\b([a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,})\b"
 )
 
-# Indian (+91) and general international / local phone-like patterns in free text
 PHONE_RE = re.compile(
     r"(?<!\w)"
     r"(?:"
@@ -23,21 +24,18 @@ PHONE_RE = re.compile(
 )
 
 URL_RE = re.compile(
-    r"(?i)\b((?:https?://|www\.)[^\s<>\[\]()\"']+|"
-    r"(?:instagram\.com|instagr\.am|twitter\.com|x\.com|facebook\.com|fb\.com|"
-    r"linkedin\.com|t\.me|telegram\.me|wa\.me|whatsapp\.com|youtube\.com|youtu\.be|"
-    r"tiktok\.com|threads\.net)/[^\s<>\[\]()\"']+)"
+    r"(?i)\b((?:https?://|www\.)?(?:instagram\.com|instagr\.am|twitter\.com|x\.com|"
+    r"t\.me|telegram\.me)/[^\s<>\[\]()\"']+)"
 )
 
 HANDLE_LINE_RE = re.compile(
-    r"(?im)^\s*(?:ig|insta|instagram|twitter|x|fb|facebook|linkedin|telegram|tg|"
-    r"whatsapp|yt|youtube|tiktok|threads)\s*[:\-]\s*@?([A-Za-z0-9._]{2,50})\s*$"
+    r"(?im)^\s*(?:ig|insta|instagram|twitter|x|telegram|tg)\s*[:\-]\s*"
+    r"@?([A-Za-z0-9._]{2,50})\s*$"
 )
 
-# Inline labels anywhere in the bio, e.g. "Telegram @sptrader" / "IG: foo"
 INLINE_HANDLE_RE = re.compile(
-    r"(?i)\b(ig|insta|instagram|twitter|x|fb|facebook|linkedin|telegram|tg|"
-    r"whatsapp|yt|youtube|tiktok|threads)\b\s*[:\-]?\s*@([A-Za-z0-9._]{2,50})"
+    r"(?i)\b(ig|insta|instagram|twitter|x|telegram|tg)\b\s*[:\-]?\s*"
+    r"@([A-Za-z0-9._]{2,50})"
 )
 
 TELEGRAM_URL_RE = re.compile(
@@ -46,32 +44,18 @@ TELEGRAM_URL_RE = re.compile(
 
 PLATFORM_HINTS: list[tuple[str, re.Pattern[str]]] = [
     ("instagram", re.compile(r"(?i)(instagram\.com|instagr\.am)")),
-    ("twitter", re.compile(r"(?i)(twitter\.com|\bx\.com\b)")),
-    ("facebook", re.compile(r"(?i)(facebook\.com|fb\.com)")),
-    ("linkedin", re.compile(r"(?i)linkedin\.com")),
+    ("x", re.compile(r"(?i)(twitter\.com|(?<![a-z0-9])x\.com)")),
     ("telegram", re.compile(r"(?i)(t\.me|telegram\.me)")),
-    ("whatsapp", re.compile(r"(?i)(wa\.me|whatsapp\.com|api\.whatsapp\.com)")),
-    ("youtube", re.compile(r"(?i)(youtube\.com|youtu\.be)")),
-    ("tiktok", re.compile(r"(?i)tiktok\.com")),
-    ("threads", re.compile(r"(?i)threads\.net")),
 ]
 
 HANDLE_PLATFORM_MAP = {
     "ig": "instagram",
     "insta": "instagram",
     "instagram": "instagram",
-    "twitter": "twitter",
-    "x": "twitter",
-    "fb": "facebook",
-    "facebook": "facebook",
-    "linkedin": "linkedin",
+    "twitter": "x",
+    "x": "x",
     "telegram": "telegram",
     "tg": "telegram",
-    "whatsapp": "whatsapp",
-    "yt": "youtube",
-    "youtube": "youtube",
-    "tiktok": "tiktok",
-    "threads": "threads",
 }
 
 
@@ -96,11 +80,27 @@ def parse_bio(description: str | None) -> ParsedBio:
     return ParsedBio(email=email, phone=phone, socials=socials)
 
 
+def filter_allowed_socials(socials: list[ParsedSocial]) -> list[ParsedSocial]:
+    return [s for s in socials if normalize_platform(s.platform) in ALLOWED_SOCIAL_PLATFORMS]
+
+
+def normalize_platform(platform: str) -> str:
+    p = (platform or "").strip().lower()
+    if p in {"twitter", "x"}:
+        return "x"
+    if p in HANDLE_PLATFORM_MAP:
+        return HANDLE_PLATFORM_MAP[p]
+    return p
+
+
 def format_socials_export(socials: list[ParsedSocial] | list) -> str:
     parts: list[str] = []
     for item in socials:
         if isinstance(item, ParsedSocial):
-            parts.append(f"{item.platform}:{item.value}")
+            platform = normalize_platform(item.platform)
+            if platform not in ALLOWED_SOCIAL_PLATFORMS:
+                continue
+            parts.append(f"{platform}:{item.value}")
         else:
             platform = getattr(item, "platform", None) or (
                 item.get("platform") if isinstance(item, dict) else None
@@ -108,7 +108,8 @@ def format_socials_export(socials: list[ParsedSocial] | list) -> str:
             value = getattr(item, "value", None) or (
                 item.get("value") if isinstance(item, dict) else None
             )
-            if platform and value:
+            platform = normalize_platform(str(platform or ""))
+            if platform in ALLOWED_SOCIAL_PLATFORMS and value:
                 parts.append(f"{platform}:{value}")
     return "; ".join(parts)
 
@@ -139,7 +140,6 @@ def _first_phone(text: str, skip_email: str | None = None) -> str | None:
         digits = re.sub(r"\D", "", raw)
         if len(digits) < 10:
             continue
-        # Avoid matching years / short IDs
         if len(digits) > 15:
             continue
         return _normalize_phone(raw, digits)
@@ -161,6 +161,9 @@ def _extract_socials(text: str) -> list[ParsedSocial]:
     seen: set[tuple[str, str]] = set()
 
     def add(platform: str, value: str) -> None:
+        platform = normalize_platform(platform)
+        if platform not in ALLOWED_SOCIAL_PLATFORMS:
+            return
         cleaned = value.strip().rstrip(".,);]}")
         if not cleaned:
             return
@@ -182,14 +185,14 @@ def _extract_socials(text: str) -> list[ParsedSocial]:
     for match in HANDLE_LINE_RE.finditer(text):
         line = match.group(0)
         handle = match.group(1)
-        label = line.split(":")[0].split("-")[0].strip().lower()
-        platform = HANDLE_PLATFORM_MAP.get(label, "other")
+        label = re.split(r"[:\-]", line, maxsplit=1)[0].strip().lower()
+        platform = HANDLE_PLATFORM_MAP.get(label, "")
         add(platform, f"@{handle}")
 
     for match in INLINE_HANDLE_RE.finditer(text):
         label = match.group(1).lower()
         handle = match.group(2)
-        platform = HANDLE_PLATFORM_MAP.get(label, "other")
+        platform = HANDLE_PLATFORM_MAP.get(label, "")
         add(platform, f"@{handle}")
 
     return found
@@ -205,4 +208,4 @@ def platform_for_url(url: str) -> str:
     for platform, pattern in PLATFORM_HINTS:
         if pattern.search(host_path):
             return platform
-    return "website"
+    return ""
