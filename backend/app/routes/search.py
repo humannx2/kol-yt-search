@@ -5,9 +5,15 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
-from app.models.schemas import EnrichChannelPayload, EnrichResponse, SearchResponse, SocialLink
+from app.models.schemas import (
+    EnrichChannelPayload,
+    EnrichRequest,
+    EnrichResponse,
+    SearchResponse,
+    SocialLink,
+)
 from app.services.bio_parser import format_socials_export
-from app.services.enrich import enrich_channel_contacts, enrich_creators_inplace
+from app.services.enrich import EnrichTarget, enrich_channel_contacts, enrich_creators_inplace
 from app.services.youtube import get_youtube_service
 
 router = APIRouter()
@@ -19,6 +25,18 @@ def _require_query(q: str | None) -> str:
     if q is None or not q.strip():
         raise HTTPException(status_code=400, detail="Query parameter 'q' is required.")
     return q.strip()
+
+
+def _enrich_response(enriched: dict[str, dict]) -> EnrichResponse:
+    channels = {
+        channel_id: EnrichChannelPayload(
+            email=payload.get("email"),
+            phone=payload.get("phone"),
+            socials=[SocialLink(**item) for item in payload.get("socials") or []],
+        )
+        for channel_id, payload in enriched.items()
+    }
+    return EnrichResponse(channels=channels)
 
 
 @router.get("/search", response_model=SearchResponse)
@@ -33,23 +51,30 @@ def search(
 
 
 @router.get("/enrich", response_model=EnrichResponse)
-def enrich(
+def enrich_get(
     ids: str = Query(default="", description="Comma-separated channel IDs (max 15)"),
 ) -> EnrichResponse:
     channel_ids = [part.strip() for part in ids.split(",") if part.strip()]
     if not channel_ids:
         return EnrichResponse(channels={})
+    return _enrich_response(enrich_channel_contacts(channel_ids))
 
-    enriched = enrich_channel_contacts(channel_ids)
-    channels = {
-        channel_id: EnrichChannelPayload(
-            email=payload.get("email"),
-            phone=payload.get("phone"),
-            socials=[SocialLink(**item) for item in payload.get("socials") or []],
+
+@router.post("/enrich", response_model=EnrichResponse)
+def enrich_post(body: EnrichRequest) -> EnrichResponse:
+    """About contacts + web email lookup for big creators (≥100k) missing YouTube email."""
+    targets = [
+        EnrichTarget(
+            channel_id=item.channel_id,
+            channel_name=item.channel_name,
+            subscribers=item.subscribers,
         )
-        for channel_id, payload in enriched.items()
-    }
-    return EnrichResponse(channels=channels)
+        for item in body.channels
+        if (item.channel_id or "").strip()
+    ]
+    if not targets:
+        return EnrichResponse(channels={})
+    return _enrich_response(enrich_channel_contacts([], targets=targets))
 
 
 @router.get("/export")

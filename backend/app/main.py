@@ -11,8 +11,11 @@ BASE_DIR = Path(__file__).resolve().parent
 
 app = FastAPI(title="YouTube Creator Search", version="0.1.0")
 
-app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
-templates = Jinja2Templates(directory=BASE_DIR / "templates")
+_static_dir = BASE_DIR / "static"
+if _static_dir.is_dir():
+    app.mount("/static", StaticFiles(directory=_static_dir), name="static")
+
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 app.state.templates = templates
 
 app.include_router(search_router, prefix="/api")

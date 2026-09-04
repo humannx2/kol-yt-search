@@ -4,38 +4,10 @@ import json
 import logging
 import re
 import ssl
-import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from urllib.parse import parse_qs, unquote, urlparse
-
-# #region agent log
-_DEBUG_LOG_PATH = "/Users/aditya.vaish/Desktop/kol-yt-search/kol-yt-search/.cursor/debug-6b9c45.log"
-
-
-def _agent_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    try:
-        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as fh:
-            fh.write(
-                json.dumps(
-                    {
-                        "sessionId": "6b9c45",
-                        "hypothesisId": hypothesis_id,
-                        "location": location,
-                        "message": message,
-                        "data": data,
-                        "timestamp": int(time.time() * 1000),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-    except Exception:
-        pass
-
-
-# #endregion
 
 from app.services.bio_parser import (
     ALLOWED_SOCIAL_PLATFORMS,
@@ -79,6 +51,7 @@ class AboutContacts:
     email: str | None = None
     phone: str | None = None
     socials: list[ParsedSocial] = field(default_factory=list)
+    website_urls: list[str] = field(default_factory=list)
 
 
 def fetch_channel_about_contacts(channel_id: str) -> AboutContacts:
@@ -87,39 +60,12 @@ def fetch_channel_about_contacts(channel_id: str) -> AboutContacts:
         return AboutContacts()
 
     data = _fetch_about_innertube(channel_id)
-    source = "innertube"
     if data is None:
         data = _fetch_about_from_html(channel_id)
-        source = "html"
     if data is None:
-        # #region agent log
-        _agent_log(
-            "A",
-            "channel_links.py:fetch_channel_about_contacts",
-            "about_fetch_empty",
-            {"channel_id": channel_id, "source": source},
-        )
-        # #endregion
         return AboutContacts()
 
-    contacts = _contacts_from_data(data, raw_text_fallback=_data_as_text(data))
-    # #region agent log
-    _agent_log(
-        "A",
-        "channel_links.py:fetch_channel_about_contacts",
-        "about_fetch_ok",
-        {
-            "channel_id": channel_id,
-            "source": source,
-            "email": bool(contacts.email),
-            "phone": bool(contacts.phone),
-            "social_count": len(contacts.socials),
-            "social_platforms": [s.platform for s in contacts.socials],
-        },
-    )
-    # #endregion
-    logger.debug("About contacts for %s via %s", channel_id, source)
-    return contacts
+    return _contacts_from_data(data, raw_text_fallback=_data_as_text(data))
 
 
 # Back-compat alias used by older call sites
@@ -132,7 +78,9 @@ def _contacts_from_data(data: dict, raw_text_fallback: str = "") -> AboutContact
     bio = parse_bio(description)
 
     socials: list[ParsedSocial] = []
+    website_urls: list[str] = []
     seen: set[tuple[str, str]] = set()
+    seen_sites: set[str] = set()
 
     def add(platform: str, value: str) -> None:
         platform = normalize_platform(platform)
@@ -147,6 +95,13 @@ def _contacts_from_data(data: dict, raw_text_fallback: str = "") -> AboutContact
         seen.add(key)
         socials.append(ParsedSocial(platform=platform, value=cleaned))
 
+    def add_site(url: str) -> None:
+        key = url.lower().rstrip("/")
+        if key in seen_sites:
+            return
+        seen_sites.add(key)
+        website_urls.append(url)
+
     for item in bio.socials:
         add(item.platform, item.value)
 
@@ -157,7 +112,10 @@ def _contacts_from_data(data: dict, raw_text_fallback: str = "") -> AboutContact
         platform = platform_for_url(url)
         if not platform and title:
             platform = _platform_from_title(title) or ""
-        add(platform, url)
+        if platform:
+            add(platform, url)
+        else:
+            add_site(url)
 
     search_blob = "\n".join(
         part for part in (description, raw_text_fallback) if part
@@ -174,7 +132,12 @@ def _contacts_from_data(data: dict, raw_text_fallback: str = "") -> AboutContact
 
         phone = _first_phone(description)
 
-    return AboutContacts(email=email, phone=phone, socials=socials)
+    return AboutContacts(
+        email=email,
+        phone=phone,
+        socials=socials,
+        website_urls=website_urls,
+    )
 
 
 def _fetch_about_innertube(channel_id: str) -> dict | None:
@@ -185,37 +148,13 @@ def _fetch_about_innertube(channel_id: str) -> dict | None:
             referer=f"https://www.youtube.com/channel/{channel_id}",
         )
     except Exception as exc:
-        # #region agent log
-        _agent_log(
-            "A",
-            "channel_links.py:_fetch_about_innertube",
-            "innertube_browse_error",
-            {"channel_id": channel_id, "error": type(exc).__name__},
-        )
-        # #endregion
         logger.warning("Innertube browse failed for %s: %s", channel_id, exc)
         return None
 
     tokens = _about_continuation_tokens(browse)
     if not tokens:
         if _has_about_payload(browse):
-            # #region agent log
-            _agent_log(
-                "A",
-                "channel_links.py:_fetch_about_innertube",
-                "innertube_inline_about",
-                {"channel_id": channel_id},
-            )
-            # #endregion
             return browse
-        # #region agent log
-        _agent_log(
-            "A",
-            "channel_links.py:_fetch_about_innertube",
-            "innertube_no_continuation",
-            {"channel_id": channel_id},
-        )
-        # #endregion
         logger.info("No About continuation for %s; falling back to HTML", channel_id)
         return None
 
@@ -227,18 +166,6 @@ def _fetch_about_innertube(channel_id: str) -> dict | None:
                 referer=f"https://www.youtube.com/channel/{channel_id}/about",
             )
         except Exception as exc:
-            # #region agent log
-            _agent_log(
-                "A",
-                "channel_links.py:_fetch_about_innertube",
-                "innertube_continuation_error",
-                {
-                    "channel_id": channel_id,
-                    "error": type(exc).__name__,
-                    "token_index": index,
-                },
-            )
-            # #endregion
             logger.warning(
                 "Innertube About continuation failed for %s (token %s): %s",
                 channel_id,
@@ -248,35 +175,8 @@ def _fetch_about_innertube(channel_id: str) -> dict | None:
             continue
 
         if _has_about_payload(about):
-            # #region agent log
-            _agent_log(
-                "A",
-                "channel_links.py:_fetch_about_innertube",
-                "innertube_about_hit",
-                {
-                    "channel_id": channel_id,
-                    "token_index": index,
-                    "token_count": len(tokens),
-                    "runId": "post-fix",
-                },
-            )
-            # #endregion
             return about
         last_empty_keys = list(about.keys())[:12]
-
-    # #region agent log
-    _agent_log(
-        "A",
-        "channel_links.py:_fetch_about_innertube",
-        "innertube_about_empty",
-        {
-            "channel_id": channel_id,
-            "token_count": len(tokens),
-            "top_keys": last_empty_keys,
-            "runId": "post-fix",
-        },
-    )
-    # #endregion
     logger.info("Innertube About empty for %s; falling back to HTML", channel_id)
     return None
 

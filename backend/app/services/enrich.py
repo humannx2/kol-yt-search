@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import json
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 
 from app.models.schemas import SocialLink
 from app.services.about_cache import (
@@ -12,150 +11,101 @@ from app.services.about_cache import (
 )
 from app.services.bio_parser import normalize_platform
 from app.services.channel_links import AboutContacts, fetch_channel_about_contacts
+from app.services.web_email import find_public_email, is_big_creator
 
 _MAX_WORKERS = 4
 _MAX_IDS = 15
 
-# #region agent log
-_DEBUG_LOG_PATH = "/Users/aditya.vaish/Desktop/kol-yt-search/kol-yt-search/.cursor/debug-6b9c45.log"
+
+@dataclass(frozen=True)
+class EnrichTarget:
+    channel_id: str
+    channel_name: str = ""
+    subscribers: int | None = None
 
 
-def _agent_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    try:
-        with open(_DEBUG_LOG_PATH, "a", encoding="utf-8") as fh:
-            fh.write(
-                json.dumps(
-                    {
-                        "sessionId": "6b9c45",
-                        "hypothesisId": hypothesis_id,
-                        "location": location,
-                        "message": message,
-                        "data": data,
-                        "timestamp": int(time.time() * 1000),
-                    },
-                    ensure_ascii=False,
-                )
-                + "\n"
+def enrich_channel_contacts(
+    channel_ids: list[str],
+    *,
+    targets: list[EnrichTarget] | None = None,
+) -> dict[str, dict]:
+    """Fetch About contacts (and web email for big creators) in parallel."""
+    by_id: dict[str, EnrichTarget] = {}
+    if targets:
+        for target in targets:
+            cid = (target.channel_id or "").strip()
+            if not cid or cid in by_id:
+                continue
+            by_id[cid] = EnrichTarget(
+                channel_id=cid,
+                channel_name=(target.channel_name or "").strip(),
+                subscribers=target.subscribers,
             )
-    except Exception:
-        pass
+            if len(by_id) >= _MAX_IDS:
+                break
 
+    if not by_id:
+        for channel_id in channel_ids:
+            cid = (channel_id or "").strip()
+            if not cid or cid in by_id:
+                continue
+            by_id[cid] = EnrichTarget(channel_id=cid)
+            if len(by_id) >= _MAX_IDS:
+                break
 
-# #endregion
-
-
-def enrich_channel_contacts(channel_ids: list[str]) -> dict[str, dict]:
-    """Fetch About-page email/phone/socials in parallel (cached, best-effort)."""
-    unique: list[str] = []
-    seen: set[str] = set()
-    for channel_id in channel_ids:
-        cid = (channel_id or "").strip()
-        if not cid or cid in seen:
-            continue
-        seen.add(cid)
-        unique.append(cid)
-        if len(unique) >= _MAX_IDS:
-            break
-
+    unique = list(by_id.keys())
     result: dict[str, dict] = {}
-    to_fetch: list[str] = []
-    cache_hits = 0
+    to_fetch: list[EnrichTarget] = []
 
     for channel_id in unique:
         cached = get_cached_contacts(channel_id)
+        target = by_id[channel_id]
         if cached is not None:
-            cache_hits += 1
+            if (
+                not cached.email
+                and is_big_creator(target.subscribers)
+                and target.channel_name
+            ):
+                web_email = find_public_email(target.channel_name)
+                if web_email:
+                    cached.email = web_email
+                    set_cached_contacts(channel_id, cached)
             result[channel_id] = contacts_as_dict(cached)
         else:
-            to_fetch.append(channel_id)
-
-    # #region agent log
-    _agent_log(
-        "C",
-        "enrich.py:enrich_channel_contacts",
-        "enrich_start",
-        {
-            "requested": len(unique),
-            "cache_hits": cache_hits,
-            "to_fetch": len(to_fetch),
-            "ids": unique[:5],
-        },
-    )
-    # #endregion
+            to_fetch.append(target)
 
     if not to_fetch:
-        # #region agent log
-        _agent_log(
-            "C",
-            "enrich.py:enrich_channel_contacts",
-            "enrich_cache_only",
-            {
-                "summary": [
-                    {
-                        "id": cid,
-                        "email": bool(payload.get("email")),
-                        "phone": bool(payload.get("phone")),
-                        "socials": len(payload.get("socials") or []),
-                    }
-                    for cid, payload in list(result.items())[:5]
-                ]
-            },
-        )
-        # #endregion
         return result
 
     with ThreadPoolExecutor(max_workers=min(_MAX_WORKERS, len(to_fetch))) as pool:
         futures = {
-            pool.submit(_fetch_one, channel_id): channel_id for channel_id in to_fetch
+            pool.submit(_fetch_one, target): target.channel_id for target in to_fetch
         }
         for future in as_completed(futures):
             channel_id = futures[future]
             try:
                 contacts = future.result()
-            except Exception as exc:
-                # #region agent log
-                _agent_log(
-                    "B",
-                    "enrich.py:enrich_channel_contacts",
-                    "enrich_fetch_exception",
-                    {"channel_id": channel_id, "error": type(exc).__name__},
-                )
-                # #endregion
+            except Exception:
                 contacts = AboutContacts()
             set_cached_contacts(channel_id, contacts)
             result[channel_id] = contacts_as_dict(contacts)
 
-    # #region agent log
-    _agent_log(
-        "B",
-        "enrich.py:enrich_channel_contacts",
-        "enrich_done",
-        {
-            "summary": [
-                {
-                    "id": cid,
-                    "email": bool(payload.get("email")),
-                    "phone": bool(payload.get("phone")),
-                    "socials": len(payload.get("socials") or []),
-                }
-                for cid, payload in list(result.items())[:8]
-            ]
-        },
-    )
-    # #endregion
     return result
 
 
-# Back-compat name
 def enrich_channel_socials(channel_ids: list[str]) -> dict[str, list[dict[str, str]]]:
     full = enrich_channel_contacts(channel_ids)
     return {cid: payload.get("socials", []) for cid, payload in full.items()}
 
 
 def enrich_creators_inplace(creators: list) -> None:
-    """Fill missing email/phone/socials from About page for creator objects."""
-    need_ids = [
-        c.channel_id
+    """Fill missing email/phone/socials from About (+ web email for big creators)."""
+    targets = [
+        EnrichTarget(
+            channel_id=c.channel_id,
+            channel_name=getattr(c, "channel_name", "") or "",
+            subscribers=getattr(c, "subscribers", None),
+        )
         for c in creators
         if c.channel_id
         and (
@@ -164,10 +114,10 @@ def enrich_creators_inplace(creators: list) -> None:
             or not (c.socials and len(c.socials) > 0)
         )
     ]
-    if not need_ids:
+    if not targets:
         return
 
-    enriched = enrich_channel_contacts(need_ids)
+    enriched = enrich_channel_contacts([], targets=targets)
     for creator in creators:
         payload = enriched.get(creator.channel_id)
         if not payload:
@@ -192,5 +142,22 @@ def enrich_creators_inplace(creators: list) -> None:
             existing.add(key)
 
 
-def _fetch_one(channel_id: str) -> AboutContacts:
-    return fetch_channel_about_contacts(channel_id)
+def _fetch_one(target: EnrichTarget) -> AboutContacts:
+    contacts = fetch_channel_about_contacts(target.channel_id)
+    if contacts.email:
+        return contacts
+    if not is_big_creator(target.subscribers) or not target.channel_name:
+        return contacts
+
+    web_email = find_public_email(
+        target.channel_name,
+        extra_urls=list(contacts.website_urls),
+    )
+    if not web_email:
+        return contacts
+    return AboutContacts(
+        email=web_email,
+        phone=contacts.phone,
+        socials=contacts.socials,
+        website_urls=contacts.website_urls,
+    )

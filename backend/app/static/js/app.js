@@ -136,66 +136,31 @@ function sortCreators(creators, sort) {
 }
 
 async function enrichVisible(visible) {
-  const needIds = visible
-    .filter(
-      (c) =>
-        !c.email ||
-        !c.phone ||
-        !c.socials ||
-        c.socials.length === 0
-    )
-    .map((c) => c.channel_id)
-    .filter(Boolean);
+  const need = visible.filter(
+    (c) =>
+      c.channel_id &&
+      (!c.email || !c.phone || !c.socials || c.socials.length === 0)
+  );
 
-  // #region agent log
-  fetch("http://127.0.0.1:7909/ingest/64ba1ad6-78b7-4e0c-89f8-7fe1a6d84a5a", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Debug-Session-Id": "6b9c45",
-    },
-    body: JSON.stringify({
-      sessionId: "6b9c45",
-      hypothesisId: "D",
-      location: "app.js:enrichVisible:start",
-      message: "enrich_visible_start",
-      data: {
-        visible: visible.length,
-        needIds: needIds.length,
-        sampleIds: needIds.slice(0, 5),
-      },
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
-
-  if (needIds.length === 0) {
+  if (need.length === 0) {
     return;
   }
 
   const token = ++enrichToken;
   showEnrichHint(true);
   try {
-    const params = new URLSearchParams({ ids: needIds.join(",") });
-    const response = await fetch(`/api/enrich?${params.toString()}`);
+    const response = await fetch("/api/enrich", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        channels: need.map((c) => ({
+          channel_id: c.channel_id,
+          channel_name: c.channel_name || "",
+          subscribers: c.subscribers ?? null,
+        })),
+      }),
+    });
     if (!response.ok || token !== enrichToken) {
-      // #region agent log
-      fetch("http://127.0.0.1:7909/ingest/64ba1ad6-78b7-4e0c-89f8-7fe1a6d84a5a", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Debug-Session-Id": "6b9c45",
-        },
-        body: JSON.stringify({
-          sessionId: "6b9c45",
-          hypothesisId: "E",
-          location: "app.js:enrichVisible:response",
-          message: "enrich_response_skipped",
-          data: { ok: response.ok, status: response.status, tokenMatch: token === enrichToken },
-          timestamp: Date.now(),
-        }),
-      }).catch(() => {});
-      // #endregion
       return;
     }
     const data = await response.json();
@@ -204,16 +169,10 @@ async function enrichVisible(visible) {
     }
     const channels = data.channels || {};
     let changed = false;
-    let matched = 0;
-    let withAnyContact = 0;
     for (const creator of allCreators) {
       const payload = channels[creator.channel_id];
       if (!payload) {
         continue;
-      }
-      matched += 1;
-      if (payload.email || payload.phone || (payload.socials && payload.socials.length)) {
-        withAnyContact += 1;
       }
       if (!creator.email && payload.email) {
         creator.email = payload.email;
@@ -242,29 +201,6 @@ async function enrichVisible(visible) {
       }
       creator.socials = merged;
     }
-    // #region agent log
-    fetch("http://127.0.0.1:7909/ingest/64ba1ad6-78b7-4e0c-89f8-7fe1a6d84a5a", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Debug-Session-Id": "6b9c45",
-      },
-      body: JSON.stringify({
-        sessionId: "6b9c45",
-        hypothesisId: "D",
-        location: "app.js:enrichVisible:merge",
-        message: "enrich_merge_result",
-        data: {
-          channelKeys: Object.keys(channels).length,
-          matched,
-          withAnyContact,
-          changed,
-          willRerender: changed && token === enrichToken,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
     if (changed && token === enrichToken) {
       const sort = sortSelect.value;
       const limit = Number(limitSelect.value) || 5;

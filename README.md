@@ -54,6 +54,31 @@ curl -s 'http://127.0.0.1:8000/api/search?q=cricket' | python3 -m json.tool
 
 ## How to host
 
+### Vercel (recommended)
+
+1. Push this repo to GitHub/GitLab/Bitbucket.
+2. In Vercel → **Add New Project** → import the repo.
+3. Set **Root Directory** to `backend` (important — the FastAPI app lives there).
+4. Framework preset should detect **FastAPI** (`app/main.py`).
+5. Add Environment Variable:
+   - `YOUTUBE_API_KEY` = your YouTube Data API v3 key
+6. Deploy.
+
+Local check with Vercel CLI (optional):
+
+```bash
+cd backend
+npx vercel dev
+```
+
+Notes for serverless:
+
+- Enrich / web-email can be slow; `vercel.json` sets `maxDuration` to **60s**.
+- The in-memory About cache is **per warm instance** (not shared across all regions).
+- Hobby plans without Fluid compute may need a lower concurrency or fewer enrich IDs if you hit timeouts.
+
+### Generic PaaS (Render, Railway, Fly, etc.)
+
 | Setting | Value |
 |---------|--------|
 | Root / working directory | `backend/` |
@@ -61,13 +86,13 @@ curl -s 'http://127.0.0.1:8000/api/search?q=cricket' | python3 -m json.tool
 | Health check | `GET /health` |
 | Required secret | `YOUTUBE_API_KEY` |
 
-`run.py` binds **`0.0.0.0`** and reads **`PORT`**.
+`run.py` reads **`PORT`** and **`HOST`**.
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `YOUTUBE_API_KEY` | **yes** | — | YouTube Data API v3 key |
 | `PORT` | no | `8000` | Listen port |
-| `HOST` | no | `0.0.0.0` | Bind address |
+| `HOST` | no | `127.0.0.1` | Bind address (`0.0.0.0` on most PaaS) |
 | `RELOAD` | no | `false` | Dev reload only |
 
 ---
@@ -78,7 +103,7 @@ Search is intentionally split into a **fast path** and a **lazy enrich** path:
 
 1. **`GET /api/search`** — only YouTube Data API (`search` + `videos` + `channels`) + bio regex + India filter. Returns the **full** India/unknown creator pool. Typically a few seconds.
 2. **Browser** — sorts and slices (5/10/15) **locally**. Changing sort/limit does **not** call search again.
-3. **`GET /api/enrich?ids=...`** — fetches About / More info contacts **only for visible channels** (max 15), in **parallel**, with a **1-hour in-memory cache**. Uses YouTube **Innertube** (`browse` + About continuation) first, then HTML `ytInitialData` as fallback. Skips channels that already have contacts from the description.
+3. **`POST /api/enrich`** — fetches About / More info contacts **only for visible channels** (max 15), in **parallel**, with a **1-hour in-memory cache**. Uses YouTube **Innertube** first, then HTML fallback. For creators with **≥100k subscribers** and no YouTube email, runs a best-effort **web email** lookup (Bing + linked/site pages). `GET /api/enrich?ids=...` still works for About-only enrich.
 4. **Export CSV** (UI) — builds CSV from the current on-screen rows (instant). Server `/api/export` still exists for API clients: fast search → sort/slice → enrich only those rows.
 
 ---
@@ -109,11 +134,11 @@ Search is intentionally split into a **fast path** and a **lazy enrich** path:
 
 Kept contacts only:
 
-- **Email** (channel description + About / More info text)
+- **Email** (channel description + About / More info text; for ≥100k-sub creators with no YT email, best-effort public web lookup)
 - **Phone** (same sources)
 - **X**, **Telegram**, **Instagram** (description + About links)
 
-Other websites are dropped. About/More info is loaded lazily via `/api/enrich` for visible creators missing any of these fields.
+Other websites are dropped from socials (but may be scraped for email when looking up big creators). About/More info is loaded lazily via `/api/enrich` for visible creators missing any of these fields.
 
 ---
 
@@ -125,7 +150,7 @@ Browser
   ├─ GET /api/search?q=...     → full India/unknown pool (fast)
   │     sort/limit in JS
   │
-  ├─ GET /api/enrich?ids=...   → About socials for visible ids (parallel + cache)
+  ├─ POST /api/enrich          → About contacts (+ web email for ≥100k missing email)
   │
   └─ Export CSV                → client CSV of current view
                                  (or GET /api/export for API clients)
@@ -135,15 +160,20 @@ Browser
 
 ```text
 backend/
-├── run.py
+├── run.py                 # local / PaaS entry
+├── vercel.json            # Vercel function limits
+├── .python-version        # Python 3.12 on Vercel
+├── requirements.txt
 └── app/
-    ├── routes/search.py       # /search /enrich /export
+    ├── main.py            # FastAPI app (Vercel entrypoint)
+    ├── routes/search.py   # /search /enrich /export
     ├── services/
-    │   ├── youtube.py         # fast YouTube pipeline
+    │   ├── youtube.py
     │   ├── bio_parser.py
-    │   ├── channel_links.py   # Innertube About + HTML fallback
-    │   ├── about_cache.py     # 1h TTL cache
-    │   └── enrich.py          # parallel enrich
+    │   ├── channel_links.py
+    │   ├── web_email.py
+    │   ├── about_cache.py
+    │   └── enrich.py
     ├── models/schemas.py
     ├── templates/index.html
     └── static/
@@ -171,23 +201,40 @@ Fast path. Returns the **entire** India/unknown pool (not pre-sliced).
 
 **Errors:** `400` missing/blank `q`; `502` YouTube/upstream failure.
 
+### `POST /api/enrich`
+
+Preferred by the UI. Body:
+
+```json
+{
+  "channels": [
+    { "channel_id": "UC...", "channel_name": "warikoo", "subscribers": 7130000 }
+  ]
+}
+```
+
+Returns About email/phone/socials. If YouTube has no email and `subscribers >= 100000`, also tries a public web email lookup.
+
 ### `GET /api/enrich`
 
 | Param | Type | Description |
 |-------|------|-------------|
 | `ids` | string | Comma-separated channel IDs (max 15) |
 
+About-only (no web email — no channel name/subscriber context).
+
 ```json
 {
   "channels": {
     "UC...": {
+      "email": "a@b.com",
       "socials": [{ "platform": "telegram", "value": "https://t.me/..." }]
     }
   }
 }
 ```
 
-Per-id failures return empty socials (no batch 502).
+Per-id failures return empty contacts (no batch 502).
 
 ### `GET /api/export`
 
@@ -203,10 +250,10 @@ query_used, relevant_video_count, subs, views, socials, mobile number, email, co
 
 ## Quota note
 
-≈ **102 units** per search (`search.list` 100 + `videos.list` 1 + `channels.list` 1). Enrich uses Innertube/HTML (no Data API quota). Server export re-runs the fast search + enriches ≤15 channels.
+≈ **102 units** per search (`search.list` 100 + `videos.list` 1 + `channels.list` 1). Enrich uses Innertube/HTML + optional web scrape (no Data API quota). Server export re-runs the fast search + enriches ≤15 channels.
 
 ---
 
 ## Out of scope
 
-Database, auth, Redis, Celery, Docker, AI scoring, HTTPS.
+Database, auth, Redis, Celery, Docker, AI scoring.

@@ -42,6 +42,16 @@ class SearchResponse(BaseModel):
     creators: list[CreatorResult] = Field(default_factory=list)
 
 
+class EnrichChannelRequest(BaseModel):
+    channel_id: str
+    channel_name: str = ""
+    subscribers: int | None = None
+
+
+class EnrichRequest(BaseModel):
+    channels: list[EnrichChannelRequest] = Field(default_factory=list)
+
+
 class EnrichChannelPayload(BaseModel):
     email: str | None = None
     phone: str | None = None
