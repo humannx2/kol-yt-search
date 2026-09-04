@@ -59,10 +59,12 @@ curl -s 'http://127.0.0.1:8000/api/search?q=cricket' | python3 -m json.tool
 1. Push this repo to GitHub/GitLab/Bitbucket.
 2. In Vercel → **Add New Project** → import the repo.
 3. Set **Root Directory** to `backend` (important — the FastAPI app lives there).
-4. Framework should use `app.main:app` (see `pyproject.toml`); serverless entry is also `api/index.py`.
+4. Vercel should detect FastAPI from `app/main.py` (`pyproject.toml` sets `entrypoint = "app.main:app"`).
 5. Add Environment Variable:
    - `YOUTUBE_API_KEY` = your YouTube Data API v3 key
 6. Deploy.
+
+Do **not** add a `functions` pattern for `api/*` — with the FastAPI preset, `api/` files are not separate Serverless Functions and that config causes deploy errors.
 
 Local check with Vercel CLI (optional):
 
@@ -73,7 +75,7 @@ npx vercel dev
 
 Notes for serverless:
 
-- Enrich / web-email can be slow; `vercel.json` sets `maxDuration` to **60s**.
+- Enrich / web-email can be slow; on Vercel, raise **Function Max Duration** in Project Settings if searches time out (Fluid compute defaults are usually enough).
 - The in-memory About cache is **per warm instance** (not shared across all regions).
 - Hobby plans without Fluid compute may need a lower concurrency or fewer enrich IDs if you hit timeouts.
 
@@ -161,13 +163,12 @@ Browser
 ```text
 backend/
 ├── run.py                 # local / PaaS entry
-├── api/index.py           # Vercel serverless entry (re-exports FastAPI app)
-├── vercel.json            # Vercel function limits
-├── pyproject.toml         # Vercel FastAPI entrypoint
+├── vercel.json
+├── pyproject.toml         # Vercel FastAPI entrypoint (app.main:app)
 ├── .python-version        # Python 3.12 on Vercel
 ├── requirements.txt
 └── app/
-    ├── main.py            # FastAPI app
+    ├── main.py            # FastAPI app (Vercel entrypoint)
     ├── routes/search.py   # /search /enrich /export
     ├── services/
     │   ├── youtube.py
