@@ -55,17 +55,17 @@ curl -s 'http://127.0.0.1:8000/api/search?q=cricket' | python3 -m json.tool
 ### Vercel (recommended)
 
 1. Push this repo to GitHub/GitLab/Bitbucket.
-2. In Vercel → **Add New Project** → import the repo.
-3. Project settings:
-   - **Root Directory:** `./` (repo root)
-   - **Framework Preset:** Other
+2. In Vercel → **Add New Project** → import the repo (or open the existing project).
+3. Project settings (critical):
+   - **Root Directory:** leave **empty** / `./` — do **not** use `backend` (that folder no longer exists)
+   - **Framework Preset:** **FastAPI** (or Other — Vercel detects `app/main.py`)
    - **Build Command:** leave empty
-   - **Install Command:** leave empty (Vercel installs from `requirements.txt`)
+   - **Install Command:** leave empty
 4. Add Environment Variable:
    - `YOUTUBE_API_KEY` = your YouTube Data API v3 key
 5. Deploy.
 
-The serverless entrypoint is [`api/index.py`](api/index.py). `vercel.json` rewrites all routes to it and bundles `app/**` (templates + static).
+Entrypoint is [`app/main.py`](app/main.py) (FastAPI instance named `app`). Do not put the app under `api/` — with the FastAPI preset, `api/` files are not separate Serverless Functions.
 
 Local check with Vercel CLI (optional):
 
@@ -75,7 +75,7 @@ npx vercel dev
 
 Notes for serverless:
 
-- Enrich / web-email can be slow; `vercel.json` sets `maxDuration` to **10s** (Hobby default cap without Fluid). Raise it on Pro / Fluid if needed.
+- `vercel.json` sets `maxDuration` to **10s** (Hobby cap without Fluid). Raise it on Pro / Fluid if searches time out.
 - The in-memory About cache is **per warm instance** (not shared across all regions).
 - Hobby plans without Fluid compute may need a lower concurrency or fewer enrich IDs if you hit timeouts.
 
@@ -162,10 +162,8 @@ Browser
 
 ```text
 .
-├── api/
-│   └── index.py           # Vercel serverless entry (exports FastAPI app)
 ├── app/
-│   ├── main.py            # FastAPI app
+│   ├── main.py            # FastAPI app (Vercel entrypoint)
 │   ├── routes/search.py   # /search /enrich /export
 │   ├── services/
 │   │   ├── youtube.py
