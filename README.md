@@ -59,7 +59,7 @@ curl -s 'http://127.0.0.1:8000/api/search?q=cricket' | python3 -m json.tool
 1. Push this repo to GitHub/GitLab/Bitbucket.
 2. In Vercel → **Add New Project** → import the repo.
 3. Set **Root Directory** to `backend` (important — the FastAPI app lives there).
-4. Framework preset should detect **FastAPI** (`app/main.py`).
+4. Framework should use `app.main:app` (see `pyproject.toml`); serverless entry is also `api/index.py`.
 5. Add Environment Variable:
    - `YOUTUBE_API_KEY` = your YouTube Data API v3 key
 6. Deploy.
@@ -161,11 +161,13 @@ Browser
 ```text
 backend/
 ├── run.py                 # local / PaaS entry
+├── api/index.py           # Vercel serverless entry (re-exports FastAPI app)
 ├── vercel.json            # Vercel function limits
+├── pyproject.toml         # Vercel FastAPI entrypoint
 ├── .python-version        # Python 3.12 on Vercel
 ├── requirements.txt
 └── app/
-    ├── main.py            # FastAPI app (Vercel entrypoint)
+    ├── main.py            # FastAPI app
     ├── routes/search.py   # /search /enrich /export
     ├── services/
     │   ├── youtube.py
