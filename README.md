@@ -54,30 +54,25 @@ curl -s 'http://127.0.0.1:8000/api/search?q=cricket' | python3 -m json.tool
 
 ### Vercel (recommended)
 
+Vercel detects FastAPI from `requirements.txt` and runs [`app/main.py`](app/main.py) (`app.main:app` in `pyproject.toml`). No `/api` handlers or rewrites.
+
 1. Push this repo to GitHub/GitLab/Bitbucket.
 2. In Vercel → **Add New Project** → import the repo (or open the existing project).
-3. Project settings (critical):
-   - **Root Directory:** leave **empty** / `./` — do **not** use `backend` (that folder no longer exists)
-   - **Framework Preset:** **FastAPI** (or Other — Vercel detects `app/main.py`)
-   - **Build Command:** leave empty
-   - **Install Command:** leave empty
-4. Add Environment Variable:
-   - `YOUTUBE_API_KEY` = your YouTube Data API v3 key
+3. Project settings:
+   - **Root Directory:** leave empty
+   - **Framework Preset:** FastAPI (`vercel.json` also sets `"framework": "fastapi"`)
+   - **Build / Install Command:** leave empty
+4. Add Environment Variable: `YOUTUBE_API_KEY`
 5. Deploy.
 
-Entrypoint is [`app/main.py`](app/main.py) (FastAPI instance named `app`). Do not put the app under `api/` — with the FastAPI preset, `api/` files are not separate Serverless Functions.
-
-Local check with Vercel CLI (optional):
-
 ```bash
-npx vercel dev
+npx vercel dev   # optional local check
 ```
 
-Notes for serverless:
+Notes:
 
-- `vercel.json` sets `maxDuration` to **10s** (Hobby cap without Fluid). Raise it on Pro / Fluid if searches time out.
-- The in-memory About cache is **per warm instance** (not shared across all regions).
-- Hobby plans without Fluid compute may need a lower concurrency or fewer enrich IDs if you hit timeouts.
+- `vercel.json` sets `maxDuration` to **10s** (Hobby default). Raise it on Pro / Fluid if searches time out.
+- The in-memory About cache is **per warm instance** (not shared across regions).
 
 ### Generic PaaS (Render, Railway, Fly, etc.)
 
@@ -163,7 +158,7 @@ Browser
 ```text
 .
 ├── app/
-│   ├── main.py            # FastAPI app (Vercel entrypoint)
+│   ├── main.py            # FastAPI app (Vercel + local entrypoint)
 │   ├── routes/search.py   # /search /enrich /export
 │   ├── services/
 │   │   ├── youtube.py
@@ -175,13 +170,10 @@ Browser
 │   ├── models/schemas.py
 │   ├── templates/index.html
 │   └── static/
-├── run.py                 # local / PaaS entry
+├── run.py                 # local / PaaS: uvicorn
 ├── requirements.txt
-├── pyproject.toml
-├── .python-version
-├── runtime.txt
-├── Procfile
-├── vercel.json
+├── pyproject.toml         # tool.vercel.entrypoint = app.main:app
+├── vercel.json            # framework: fastapi
 ├── .vercelignore
 └── .env.example
 ```
