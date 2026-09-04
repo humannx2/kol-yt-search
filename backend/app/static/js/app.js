@@ -1,8 +1,13 @@
 const form = document.getElementById("search-form");
 const input = document.getElementById("search-input");
 const button = document.getElementById("search-button");
+const exportButton = document.getElementById("export-button");
+const sortSelect = document.getElementById("sort-select");
+const limitSelect = document.getElementById("limit-select");
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
+
+let lastQuery = "";
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -13,14 +18,33 @@ form.addEventListener("submit", async (event) => {
   await runSearch(query);
 });
 
+exportButton.addEventListener("click", () => {
+  const query = lastQuery || input.value.trim();
+  if (!query) {
+    return;
+  }
+  const params = buildParams(query);
+  window.location.href = `/api/export?${params.toString()}`;
+});
+
+function buildParams(query) {
+  const params = new URLSearchParams({
+    q: query,
+    sort: sortSelect.value,
+    limit: limitSelect.value,
+  });
+  return params;
+}
+
 async function runSearch(query) {
   setLoading(true);
   showStatus("Searching YouTube…");
   resultsEl.hidden = true;
   resultsEl.innerHTML = "";
+  exportButton.disabled = true;
 
   try {
-    const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+    const response = await fetch(`/api/search?${buildParams(query).toString()}`);
     if (!response.ok) {
       let detail = "Unable to retrieve YouTube results.";
       try {
@@ -35,8 +59,11 @@ async function runSearch(query) {
     }
 
     const data = await response.json();
+    lastQuery = data.query || query;
     renderResults(data);
+    exportButton.disabled = !(data.creators && data.creators.length > 0);
   } catch (error) {
+    lastQuery = "";
     showStatus(error instanceof Error ? error.message : "Something went wrong.", true);
   } finally {
     setLoading(false);
@@ -46,6 +73,8 @@ async function runSearch(query) {
 function setLoading(isLoading) {
   button.disabled = isLoading;
   input.disabled = isLoading;
+  sortSelect.disabled = isLoading;
+  limitSelect.disabled = isLoading;
   button.textContent = isLoading ? "Searching…" : "Search";
 }
 
@@ -72,7 +101,10 @@ function renderResults(data) {
   resultsEl.hidden = false;
   resultsEl.innerHTML = `
     <h2 class="results-heading">Results for “${escapeHtml(data.query)}”</h2>
-    <p class="results-meta">Top creators · ${data.result_count} videos analyzed</p>
+    <p class="results-meta">
+      Top creators (India or unknown country) · ${data.result_count} videos analyzed ·
+      sort: ${escapeHtml(data.sort)} · showing ${data.creators.length}
+    </p>
     <div class="creator-list">
       ${data.creators.map(renderCreator).join("")}
     </div>
@@ -85,21 +117,52 @@ function renderCreator(creator) {
       ? "Subscribers hidden"
       : `${formatCompactNumber(creator.subscribers)} subscribers`;
 
+  const countryLabel = creator.country || "Unknown";
   const avatar = creator.thumbnail
     ? `<img class="creator-avatar" src="${escapeAttr(creator.thumbnail)}" alt="" />`
     : `<div class="avatar-placeholder" aria-hidden="true"></div>`;
+
+  const contactBits = [];
+  if (creator.email) {
+    contactBits.push(
+      `<p>Email: <a href="mailto:${escapeAttr(creator.email)}">${escapeHtml(
+        creator.email
+      )}</a></p>`
+    );
+  }
+  if (creator.phone) {
+    contactBits.push(`<p>Phone: ${escapeHtml(creator.phone)}</p>`);
+  }
+  if (creator.socials && creator.socials.length > 0) {
+    const links = creator.socials
+      .map((s) => {
+        const href = s.value.startsWith("http") ? s.value : null;
+        if (href) {
+          return `<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(
+            s.platform
+          )}</a>`;
+        }
+        return `<span>${escapeHtml(s.platform)}: ${escapeHtml(s.value)}</span>`;
+      })
+      .join(" · ");
+    contactBits.push(`<p class="socials">Socials: ${links}</p>`);
+  }
 
   return `
     <article class="creator-card">
       <div class="creator-header">
         ${avatar}
         <div class="creator-info">
-          <h3>${escapeHtml(creator.channel_name)}</h3>
+          <div class="title-row">
+            <h3>${escapeHtml(creator.channel_name)}</h3>
+            <span class="badge">${escapeHtml(countryLabel)}</span>
+          </div>
           <p>${subscribers}</p>
           <p>${creator.relevant_video_count} relevant video${
             creator.relevant_video_count === 1 ? "" : "s"
           }</p>
           <p>${formatCompactNumber(creator.combined_views)} combined views</p>
+          ${contactBits.join("")}
           <a class="channel-link" href="${escapeAttr(
             creator.channel_url
           )}" target="_blank" rel="noopener noreferrer">View Channel →</a>

@@ -10,7 +10,10 @@
     <main class="container">
       <header class="header">
         <h1>YouTube Creator Search</h1>
-        <p>Find the creators appearing most often for any YouTube topic.</p>
+        <p>
+          Find Indian (or unknown-country) creators appearing most often for any
+          YouTube topic.
+        </p>
       </header>
 
       <form id="search-form" class="search-form" autocomplete="off">
@@ -22,7 +25,24 @@
           aria-label="Search topic"
           required
         />
+        <label class="control">
+          <span>Sort</span>
+          <select id="sort-select" aria-label="Sort by">
+            <option value="relevance" selected>Relevance</option>
+            <option value="subscribers">Subscribers</option>
+            <option value="views">Views</option>
+          </select>
+        </label>
+        <label class="control">
+          <span>Channels</span>
+          <select id="limit-select" aria-label="Number of channels">
+            <option value="5" selected>5</option>
+            <option value="10">10</option>
+            <option value="15">15</option>
+          </select>
+        </label>
         <button id="search-button" type="submit">Search</button>
+        <button id="export-button" type="button" disabled>Export CSV</button>
       </form>
 
       <section id="status" class="status" hidden></section>

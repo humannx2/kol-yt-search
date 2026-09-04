@@ -1,4 +1,13 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
+
+SortOption = Literal["relevance", "subscribers", "views"]
+
+
+class SocialLink(BaseModel):
+    platform: str
+    value: str
 
 
 class VideoResult(BaseModel):
@@ -18,10 +27,16 @@ class CreatorResult(BaseModel):
     subscribers: int | None = None
     relevant_video_count: int
     combined_views: int
+    country: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    socials: list[SocialLink] = Field(default_factory=list)
     videos: list[VideoResult] = Field(default_factory=list)
 
 
 class SearchResponse(BaseModel):
     query: str
     result_count: int
+    sort: SortOption = "relevance"
+    limit: int = 5
     creators: list[CreatorResult] = Field(default_factory=list)

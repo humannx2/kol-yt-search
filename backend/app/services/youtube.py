@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import HTTPException
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from app.config import get_youtube_api_key
-from app.models.schemas import CreatorResult, SearchResponse, VideoResult
+from app.models.schemas import CreatorResult, SearchResponse, SocialLink, VideoResult
+from app.services.bio_parser import ParsedSocial, is_india_or_unknown, parse_bio
+from app.services.channel_links import fetch_channel_about_socials
+
+SortOption = Literal["relevance", "subscribers", "views"]
+
 
 def _upstream_error() -> HTTPException:
     return HTTPException(
@@ -29,11 +34,19 @@ class YouTubeService:
             cache_discovery=False,
         )
 
-    def search_creators(self, query: str) -> SearchResponse:
+    def search_creators(
+        self,
+        query: str,
+        *,
+        limit: int = 5,
+        sort: SortOption = "relevance",
+    ) -> SearchResponse:
         try:
             search_items = self._search_videos(query)
             if not search_items:
-                return SearchResponse(query=query, result_count=0, creators=[])
+                return SearchResponse(
+                    query=query, result_count=0, sort=sort, limit=limit, creators=[]
+                )
 
             video_ids = [
                 item["id"]["videoId"]
@@ -42,16 +55,22 @@ class YouTubeService:
             ]
             videos = self._fetch_videos(video_ids)
             if not videos:
-                return SearchResponse(query=query, result_count=0, creators=[])
+                return SearchResponse(
+                    query=query, result_count=0, sort=sort, limit=limit, creators=[]
+                )
 
             channel_ids = list({v["channel_id"] for v in videos if v["channel_id"]})
             channels = self._fetch_channels(channel_ids)
-            creators = self._aggregate_and_rank(videos, channels)
+            creators = self._aggregate(videos, channels)
+            creators = [c for c in creators if is_india_or_unknown(c.country)]
+            creators = self._sort_creators(creators, sort)
 
             return SearchResponse(
                 query=query,
                 result_count=len(videos),
-                creators=creators[:5],
+                sort=sort,
+                limit=limit,
+                creators=creators[:limit],
             )
         except HTTPException:
             raise
@@ -117,16 +136,44 @@ class YouTubeService:
                     if "subscriberCount" in statistics
                     else None
                 )
+                country_raw = snippet.get("country")
+                country = (
+                    country_raw.strip().upper()
+                    if isinstance(country_raw, str) and country_raw.strip()
+                    else None
+                )
+                description = snippet.get("description") or ""
+                bio = parse_bio(description)
+                about_socials = fetch_channel_about_socials(channel_id)
+                socials = _merge_socials(list(bio.socials), about_socials)
                 channels[channel_id] = {
                     "channel_id": channel_id,
                     "channel_name": snippet.get("title") or "",
                     "channel_url": f"https://www.youtube.com/channel/{channel_id}",
                     "thumbnail": _best_thumbnail(snippet.get("thumbnails") or {}),
                     "subscribers": subscribers,
+                    "country": country,
+                    "email": bio.email,
+                    "phone": bio.phone,
+                    "socials": socials,
                 }
         return channels
 
-    def _aggregate_and_rank(
+
+def _merge_socials(
+    primary: list[ParsedSocial], secondary: list[ParsedSocial]
+) -> list[ParsedSocial]:
+    merged: list[ParsedSocial] = []
+    seen: set[tuple[str, str]] = set()
+    for item in [*primary, *secondary]:
+        key = (item.platform, item.value.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return merged
+
+    def _aggregate(
         self,
         videos: list[dict[str, Any]],
         channels: dict[str, dict[str, Any]],
@@ -152,6 +199,11 @@ class YouTubeService:
             ]
             video_results.sort(key=lambda v: v.views, reverse=True)
 
+            socials = [
+                SocialLink(platform=s.platform, value=s.value)
+                for s in channel.get("socials") or []
+            ]
+
             creators.append(
                 CreatorResult(
                     channel_id=channel_id,
@@ -164,15 +216,44 @@ class YouTubeService:
                     subscribers=channel.get("subscribers"),
                     relevant_video_count=len(channel_videos),
                     combined_views=sum(v.get("views", 0) for v in channel_videos),
+                    country=channel.get("country"),
+                    email=channel.get("email"),
+                    phone=channel.get("phone"),
+                    socials=socials,
                     videos=video_results,
                 )
             )
+        return creators
 
-        creators.sort(
+    def _sort_creators(
+        self, creators: list[CreatorResult], sort: SortOption
+    ) -> list[CreatorResult]:
+        if sort == "subscribers":
+            return sorted(
+                creators,
+                key=lambda c: (
+                    c.subscribers is not None,
+                    c.subscribers or 0,
+                    c.relevant_video_count,
+                    c.combined_views,
+                ),
+                reverse=True,
+            )
+        if sort == "views":
+            return sorted(
+                creators,
+                key=lambda c: (
+                    c.combined_views,
+                    c.relevant_video_count,
+                    c.subscribers or 0,
+                ),
+                reverse=True,
+            )
+        return sorted(
+            creators,
             key=lambda c: (c.relevant_video_count, c.combined_views),
             reverse=True,
         )
-        return creators
 
 
 def _safe_int(value: Any) -> int:

@@ -1,76 +1,117 @@
 # YouTube Creator Search
 
-Keyword → YouTube Data API v3 → aggregate creators → top 5 ranked results.
+Keyword → YouTube Data API v3 → India/unknown country filter → contacts from bio → ranked creators.
 
 Single FastAPI process serves both the JSON API and the web UI. No database, no auth, no Node/npm.
 
 ---
 
-## Quick start
+## How to run (local)
 
-### Requirements
-
-- Python 3.11+
-- A [YouTube Data API v3](https://console.cloud.google.com/apis/library/youtube.googleapis.com) key
-
-### Install
+**1. Install**
 
 ```bash
 cd backend
 pip3 install -r requirements.txt
+```
+
+**2. Add your API key**
+
+```bash
 cp .env.example .env
 ```
 
-Edit `.env`:
+Put your key in `backend/.env`:
 
 ```env
 YOUTUBE_API_KEY=your_api_key_here
 ```
 
-### Run
+Get a key from [Google Cloud → YouTube Data API v3](https://console.cloud.google.com/apis/library/youtube.googleapis.com).
+
+**3. Start**
 
 ```bash
 cd backend
-python3 -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+python3 run.py
 ```
+
+Dev reload: `RELOAD=true python3 run.py`
+
+**4. Open**
 
 | Surface | URL |
 |---------|-----|
 | Web UI | http://127.0.0.1:8000 |
-| OpenAPI docs | http://127.0.0.1:8000/docs |
+| API docs | http://127.0.0.1:8000/docs |
 | Health | http://127.0.0.1:8000/health |
+
+```bash
+curl -s 'http://127.0.0.1:8000/api/search?q=cricket&limit=5&sort=relevance' | python3 -m json.tool
+```
+
+---
+
+## How to host
+
+| Setting | Value |
+|---------|--------|
+| Root / working directory | `backend/` |
+| Start command | `python run.py` |
+| Health check | `GET /health` |
+| Required secret | `YOUTUBE_API_KEY` |
+
+`run.py` binds **`0.0.0.0`** and reads **`PORT`**.
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `YOUTUBE_API_KEY` | **yes** | — | YouTube Data API v3 key |
+| `PORT` | no | `8000` | HTTP port |
+| `HOST` | no | `0.0.0.0` | Bind address |
+| `RELOAD` | no | `false` | Dev reload only |
 
 ---
 
 ## What it does
 
-1. You enter a topic (e.g. `nvidia earnings`).
-2. The app searches YouTube for up to **50 relevant videos** (not channels).
-3. It loads video + channel statistics.
-4. Videos are grouped by `channel_id`.
-5. Creators are ranked and the **top 5** are returned.
+1. Search YouTube for up to **50 relevant videos** for the query.
+2. Load video + channel statistics and channel **description** / **country**.
+3. Parse each channel bio for **email**, **phone**, and **social links**.
+4. **Hard filter:** keep only creators with `country == IN` **or** unknown/missing country. Drop set countries that are not India.
+5. Sort and return up to **N** creators (default 5, max 15).
+6. Optionally **export CSV** with contact fields.
 
-### Ranking (MVP)
+### Ranking / sort
 
-Primary: `relevant_video_count` (how many of the 50 results belong to the channel)  
-Secondary: `combined_views` (sum of views on those relevant videos)
+| `sort` | Order |
+|--------|--------|
+| `relevance` (default) | `relevant_video_count`, then `combined_views` |
+| `subscribers` | subscriber count desc (hidden/null last), then relevance |
+| `views` | `combined_views` desc, then relevance |
 
-```text
-sort(creators, key=(relevant_video_count, combined_views), reverse=True)[:5]
-```
+### Country filter
 
-UI labels these as **Top creators**, not “best” creators.
+Uses YouTube `channels.list` → `snippet.country` (ISO code).
 
-### UI features
+- Keep: `IN`, missing, empty
+- Drop: any other set country (e.g. `US`, `GB`)
 
-- Search input (Enter to submit)
-- Button disabled while request is in flight
-- Loading: `Searching YouTube…`
-- Empty: `No relevant creators found.`
-- Error banner on API failure
-- Per creator: thumbnail, name, subscribers, relevant video count, combined views, channel link
-- Per video: thumbnail, title (opens YouTube), views, relative publish date
-- Compact number formatting (`1.2M`, `842K`)
+### Contact extraction
+
+From channel **description** text only (Data API; no About-page HTML scrape):
+
+- First email match
+- First plausible phone (Indian `+91` / 10-digit and general international patterns)
+- Social URLs and labeled handles: Instagram, X/Twitter, Facebook, LinkedIn, Telegram, WhatsApp, YouTube, TikTok, Threads, plus generic websites
+
+Missing values stay empty/`null` — nothing is invented.
+
+### UI controls
+
+- Sort dropdown: Relevance / Subscribers / Views
+- Channels dropdown: 5 / 10 / 15
+- Export CSV (after a successful search with results)
+- Per creator: country badge, email, phone, socials, videos
 
 ---
 
@@ -79,199 +120,122 @@ UI labels these as **Top creators**, not “best” creators.
 ```text
 Browser
   │
-  ├─ GET /                     → Jinja template + static CSS/JS
-  │                                JS calls /api/search
-  │
-  └─ GET /api/search?q=...     → FastAPI route (thin)
-                                   │
-                                   └─ YouTubeService.search_creators()
-                                        │
-                                        ├─ search.list   (videos, max 50, relevance)
-                                        ├─ videos.list   (snippet + statistics)
-                                        ├─ channels.list (snippet + statistics)
-                                        ├─ group by channel_id
-                                        ├─ rank + slice top 5
-                                        └─ SearchResponse (Pydantic)
+  ├─ GET /                  → UI (sort, limit, export)
+  ├─ GET /api/search        → JSON creators
+  └─ GET /api/export        → CSV download
+         │
+         └─ YouTubeService.search_creators(q, limit, sort)
+              search.list → videos.list → channels.list
+              parse bio → filter IN|unknown → sort → slice
 ```
-
-### Design choices
-
-| Choice | Why |
-|--------|-----|
-| Search videos first, then derive creators | Product logic: who dominates a topic’s results |
-| Group by `channel_id` | Names collide / change |
-| No DB / cache | MVP proves the pipeline; every request is live |
-| API key only on server | Never shipped to the browser |
-| Same-origin UI | No CORS complexity |
-
-### Quota note
-
-Each search typically costs:
-
-- 100 units — `search.list`
-- 1 unit — `videos.list` (batch)
-- 1 unit — `channels.list` (batch)
-
-≈ **102 units** per query against the default 10,000/day quota.
 
 ### Project layout
 
 ```text
-kol-yt-search/
-├── README.md
-├── .gitignore
-└── backend/
-    ├── .env.example
-    ├── requirements.txt
-    └── app/
-        ├── main.py              # app, static mount, routers
-        ├── config.py            # load YOUTUBE_API_KEY
-        ├── models/schemas.py    # Pydantic response models
-        ├── routes/
-        │   ├── pages.py         # GET /
-        │   └── search.py        # GET /api/search
-        ├── services/
-        │   └── youtube.py       # YouTube client + aggregate/rank
-        ├── templates/
-        │   └── index.html
-        └── static/
-            ├── css/app.css
-            └── js/app.js
+backend/
+├── run.py
+├── app/
+│   ├── main.py
+│   ├── routes/search.py      # /api/search + /api/export
+│   ├── services/
+│   │   ├── youtube.py
+│   │   └── bio_parser.py     # email / phone / socials / country helper
+│   ├── models/schemas.py
+│   ├── templates/index.html
+│   └── static/
 ```
 
 ---
 
 ## HTTP API
 
-Base URL: `http://127.0.0.1:8000`
-
 ### `GET /health`
-
-Liveness check.
-
-**Response `200`**
 
 ```json
 { "status": "ok" }
 ```
 
----
-
-### `GET /`
-
-HTML application shell. Static assets under `/static/*`.
-
----
-
 ### `GET /api/search`
 
-Search YouTube and return the top 5 creators for the query.
-
-| Param | Type | Required | Description |
-|-------|------|----------|-------------|
-| `q` | string | yes | Search keyword / topic (whitespace-only rejected) |
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `q` | string | required | Search topic |
+| `limit` | int | `5` | Creators to return (1–15) |
+| `sort` | string | `relevance` | `relevance` \| `subscribers` \| `views` |
 
 **Example**
 
 ```bash
-curl -s 'http://127.0.0.1:8000/api/search?q=nvidia%20earnings' | python3 -m json.tool
+curl -s 'http://127.0.0.1:8000/api/search?q=cricket&limit=10&sort=subscribers'
 ```
 
-**Response `200`**
+**Response `200` (shape)**
 
 ```json
 {
-  "query": "nvidia earnings",
+  "query": "cricket",
   "result_count": 50,
+  "sort": "subscribers",
+  "limit": 10,
   "creators": [
     {
       "channel_id": "UC...",
-      "channel_name": "Example Channel",
+      "channel_name": "Example",
       "channel_url": "https://www.youtube.com/channel/UC...",
       "thumbnail": "https://...",
       "subscribers": 1200000,
-      "relevant_video_count": 6,
+      "relevant_video_count": 4,
       "combined_views": 8400000,
-      "videos": [
-        {
-          "video_id": "abc123",
-          "title": "Nvidia Earnings Breakdown",
-          "url": "https://www.youtube.com/watch?v=abc123",
-          "thumbnail": "https://...",
-          "views": 2100000,
-          "published_at": "2026-08-28T12:00:00Z"
-        }
-      ]
+      "country": "IN",
+      "email": "hello@example.com",
+      "phone": "+91 98765 43210",
+      "socials": [
+        { "platform": "instagram", "value": "https://instagram.com/..." }
+      ],
+      "videos": []
     }
   ]
 }
 ```
 
-| Field | Notes |
-|-------|--------|
-| `result_count` | Videos successfully loaded after `videos.list` (≤ 50) |
-| `creators` | Max length 5; may be shorter |
-| `subscribers` | Exact integer when YouTube returns it; `null` if hidden |
-| `videos[].views` | Exact integers in API; UI compresses for display |
-| `videos` | Sorted by views descending within each creator |
+`country` is `"IN"` or `null` (unknown). Non-India countries never appear.
 
-**Empty results `200`**
+**Errors:** `400` missing/blank `q`; `502` YouTube/upstream failure.
 
-```json
-{
-  "query": "some obscure string",
-  "result_count": 0,
-  "creators": []
-}
-```
+### `GET /api/export`
 
-**Errors**
+Same query params as `/api/search`. Returns CSV attachment `creators_export.csv`.
 
-| Status | When | Body |
-|--------|------|------|
-| `400` | Missing or blank `q` | `{"detail":"Query parameter 'q' is required."}` |
-| `502` | Missing API key, YouTube HTTP error, or unexpected failure | `{"detail":"Unable to retrieve YouTube results."}` |
-
-API keys and stack traces are never returned to clients.
-
----
-
-## Environment
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `YOUTUBE_API_KEY` | yes | Google Cloud YouTube Data API v3 key |
-
-Loaded from `backend/.env` (gitignored). Template: `backend/.env.example`.
-
----
-
-## Dependencies
+Columns (exact order):
 
 ```text
-fastapi
-uvicorn[standard]
-google-api-python-client
-python-dotenv
-pydantic
-jinja2
+query_used, relevant_video_count, subs, views, socials, mobile number, email, country
 ```
 
----
-
-## Out of scope (intentionally)
-
-Database, auth, Redis, Celery, Docker, AI scoring, sentiment, engagement scores, trend detection, CSV export, saved searches.
-
----
-
-## Smoke checks
+| Column | Source |
+|--------|--------|
+| `query_used` | search query |
+| `relevant_video_count` | videos for that creator in the result set |
+| `subs` | channel subscribers (blank if hidden) |
+| `views` | `combined_views` of relevant videos |
+| `socials` | `platform:value` pairs joined by `; ` |
+| `mobile number` | parsed phone |
+| `email` | parsed email |
+| `country` | `IN` or blank if unknown |
 
 ```bash
-curl -s http://127.0.0.1:8000/health
-curl -s 'http://127.0.0.1:8000/api/search?q=tesla'
-curl -s 'http://127.0.0.1:8000/api/search?q='          # expect 400
-curl -s 'http://127.0.0.1:8000/api/search'              # expect 400
+curl -L -o creators.csv \
+  'http://127.0.0.1:8000/api/export?q=cricket&limit=10&sort=views'
 ```
 
-Suggested queries: `nvidia earnings`, `tesla`, `ai agents`, `python tutorial`, `football`.
+---
+
+## Quota note
+
+≈ **102 units** per search/export call (`search.list` 100 + `videos.list` 1 + `channels.list` 1). Export re-runs the same pipeline.
+
+---
+
+## Out of scope
+
+Database, auth, Redis, Celery, Docker, AI scoring, scraping YouTube About HTML beyond Data API description/country.
