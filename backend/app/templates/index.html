@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>YouTube Creator Search</title>
+    <link rel="stylesheet" href="/static/css/app.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="header">
+        <h1>YouTube Creator Search</h1>
+        <p>Find the creators appearing most often for any YouTube topic.</p>
+      </header>
+
+      <form id="search-form" class="search-form" autocomplete="off">
+        <input
+          id="search-input"
+          type="text"
+          name="q"
+          placeholder="Search a topic..."
+          aria-label="Search topic"
+          required
+        />
+        <button id="search-button" type="submit">Search</button>
+      </form>
+
+      <section id="status" class="status" hidden></section>
+      <section id="results" class="results" hidden></section>
+    </main>
+    <script src="/static/js/app.js"></script>
+  </body>
+</html>
