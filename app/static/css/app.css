@@ -480,6 +480,29 @@ a.chip:hover {
   background: #222b3a;
 }
 
+.chip-loading {
+  border-color: rgba(214, 255, 63, 0.28);
+  background: rgba(214, 255, 63, 0.08);
+  color: var(--accent);
+}
+
+.chip-loading::before {
+  content: "";
+  width: 0.4rem;
+  height: 0.4rem;
+  margin-right: 0.4rem;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.chip-empty {
+  border-style: dashed;
+  color: var(--muted);
+  background: transparent;
+}
+
 .channel-link {
   display: inline-flex;
   margin-top: 0.85rem;

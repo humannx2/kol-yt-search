@@ -12,6 +12,8 @@ let allCreators = [];
 let resultCount = 0;
 let enrichToken = 0;
 let enrichActive = false;
+const enrichingIds = new Set();
+const contactsSettled = new Set();
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -59,6 +61,9 @@ async function runSearch(query) {
   }
   showSkeletons();
   allCreators = [];
+  enrichingIds.clear();
+  contactsSettled.clear();
+  enrichToken += 1;
 
   try {
     const params = new URLSearchParams({ q: query });
@@ -146,19 +151,50 @@ function sortCreators(creators, sort) {
   return copy;
 }
 
-async function enrichVisible(visible) {
-  const need = visible.filter(
-    (c) =>
-      c.channel_id &&
-      (!c.email || !c.phone || !c.socials || c.socials.length === 0)
+function needsEnrich(creator) {
+  return (
+    Boolean(creator.channel_id) &&
+    (!creator.email ||
+      !creator.phone ||
+      !creator.socials ||
+      creator.socials.length === 0)
   );
+}
+
+function refreshVisibleResults() {
+  const sort = sortSelect.value;
+  const limit = Number(limitSelect.value) || 5;
+  const visible = sortCreators(allCreators, sort).slice(0, limit);
+  renderResults(lastQuery, resultCount, sort, visible, allCreators.length);
+  if (enrichActive) {
+    showEnrichHint(true);
+  }
+}
+
+async function enrichVisible(visible) {
+  const need = visible.filter(needsEnrich);
+  const needIds = new Set(need.map((c) => c.channel_id));
+
+  enrichingIds.clear();
+  for (const creator of visible) {
+    if (!needIds.has(creator.channel_id)) {
+      contactsSettled.add(creator.channel_id);
+    }
+  }
 
   if (need.length === 0) {
+    refreshVisibleResults();
     return;
+  }
+
+  for (const creator of need) {
+    enrichingIds.add(creator.channel_id);
   }
 
   const token = ++enrichToken;
   showEnrichHint(true);
+  refreshVisibleResults();
+
   try {
     const response = await fetch("/api/enrich", {
       method: "POST",
@@ -179,7 +215,6 @@ async function enrichVisible(visible) {
       return;
     }
     const channels = data.channels || {};
-    let changed = false;
     for (const creator of allCreators) {
       const payload = channels[creator.channel_id];
       if (!payload) {
@@ -187,11 +222,9 @@ async function enrichVisible(visible) {
       }
       if (!creator.email && payload.email) {
         creator.email = payload.email;
-        changed = true;
       }
       if (!creator.phone && payload.phone) {
         creator.phone = payload.phone;
-        changed = true;
       }
       const existing = new Set(
         (creator.socials || []).map((s) => `${s.platform}:${s.value.toLowerCase()}`)
@@ -208,22 +241,17 @@ async function enrichVisible(visible) {
         }
         merged.push({ platform, value: social.value });
         existing.add(key);
-        changed = true;
       }
       creator.socials = merged;
     }
-    if (changed && token === enrichToken) {
-      const sort = sortSelect.value;
-      const limit = Number(limitSelect.value) || 5;
-      const nextVisible = sortCreators(allCreators, sort).slice(0, limit);
-      renderResults(lastQuery, resultCount, sort, nextVisible, allCreators.length);
-      if (enrichActive) {
-        showEnrichHint(true);
-      }
-    }
   } finally {
     if (token === enrichToken) {
+      for (const creator of need) {
+        enrichingIds.delete(creator.channel_id);
+        contactsSettled.add(creator.channel_id);
+      }
       showEnrichHint(false);
+      refreshVisibleResults();
     }
   }
 }
@@ -241,7 +269,7 @@ function showEnrichHint(show) {
     hint = document.createElement("p");
     hint.id = "enrich-hint";
     hint.className = "enrich-hint";
-    hint.textContent = "Finding contacts…";
+    hint.textContent = "Loading contact & social details…";
     const toolbar = resultsEl.querySelector(".results-toolbar");
     if (toolbar) {
       toolbar.insertAdjacentElement("afterend", hint);
@@ -354,6 +382,14 @@ function renderCreator(creator) {
 }
 
 function renderContacts(creator) {
+  const channelId = creator.channel_id;
+
+  if (enrichingIds.has(channelId)) {
+    return `<div class="contacts">
+      <span class="chip chip-loading">Loading contact &amp; socials…</span>
+    </div>`;
+  }
+
   const chips = [];
 
   if (creator.email) {
@@ -389,10 +425,19 @@ function renderContacts(creator) {
     }
   }
 
-  if (chips.length === 0) {
-    return "";
+  if (chips.length > 0) {
+    return `<div class="contacts">${chips.join("")}</div>`;
   }
-  return `<div class="contacts">${chips.join("")}</div>`;
+
+  if (contactsSettled.has(channelId) || !needsEnrich(creator)) {
+    return `<div class="contacts">
+      <span class="chip chip-empty">No publicly disclosed contact detail</span>
+    </div>`;
+  }
+
+  return `<div class="contacts">
+    <span class="chip chip-loading">Loading contact &amp; socials…</span>
+  </div>`;
 }
 
 function renderVideo(video) {
