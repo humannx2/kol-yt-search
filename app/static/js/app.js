@@ -113,6 +113,20 @@ function applyView() {
   enrichVisible(visible);
 }
 
+function countryRank(country) {
+  const code = String(country || "")
+    .trim()
+    .toUpperCase();
+  return code === "IN" ? 0 : 1;
+}
+
+function compareRelevance(a, b) {
+  if (b.relevant_video_count !== a.relevant_video_count) {
+    return b.relevant_video_count - a.relevant_video_count;
+  }
+  return b.combined_views - a.combined_views;
+}
+
 function sortCreators(creators, sort) {
   const copy = [...creators];
   if (sort === "subscribers") {
@@ -123,10 +137,7 @@ function sortCreators(creators, sort) {
       if ((b.subscribers || 0) !== (a.subscribers || 0)) {
         return (b.subscribers || 0) - (a.subscribers || 0);
       }
-      if (b.relevant_video_count !== a.relevant_video_count) {
-        return b.relevant_video_count - a.relevant_video_count;
-      }
-      return b.combined_views - a.combined_views;
+      return compareRelevance(a, b);
     });
     return copy;
   }
@@ -142,12 +153,15 @@ function sortCreators(creators, sort) {
     });
     return copy;
   }
-  copy.sort((a, b) => {
-    if (b.relevant_video_count !== a.relevant_video_count) {
-      return b.relevant_video_count - a.relevant_video_count;
-    }
-    return b.combined_views - a.combined_views;
-  });
+  if (sort === "in_first") {
+    copy.sort((a, b) => {
+      const rankDiff = countryRank(a.country) - countryRank(b.country);
+      if (rankDiff !== 0) return rankDiff;
+      return compareRelevance(a, b);
+    });
+    return copy;
+  }
+  copy.sort(compareRelevance);
   return copy;
 }
 
@@ -313,8 +327,13 @@ function hideStatus() {
 function renderResults(query, videosAnalyzed, sort, visible, poolSize) {
   hideStatus();
   resultsEl.hidden = false;
-  const sortLabel =
-    sort === "subscribers" ? "subscribers" : sort === "views" ? "views" : "relevance";
+  const sortLabels = {
+    in_first: "IN First",
+    relevance: "relevance",
+    subscribers: "subscribers",
+    views: "views",
+  };
+  const sortLabel = sortLabels[sort] || sort;
 
   resultsEl.innerHTML = `
     <div class="results-toolbar">
