@@ -1,16 +1,17 @@
 const form = document.getElementById("search-form");
 const input = document.getElementById("search-input");
 const button = document.getElementById("search-button");
-const exportButton = document.getElementById("export-button");
 const sortSelect = document.getElementById("sort-select");
 const limitSelect = document.getElementById("limit-select");
 const statusEl = document.getElementById("status");
 const resultsEl = document.getElementById("results");
+const idleHint = document.getElementById("idle-hint");
 
 let lastQuery = "";
 let allCreators = [];
 let resultCount = 0;
 let enrichToken = 0;
+let enrichActive = false;
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -35,7 +36,15 @@ limitSelect.addEventListener("change", () => {
   applyView();
 });
 
-exportButton.addEventListener("click", () => {
+resultsEl.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof Element)) {
+    return;
+  }
+  const exportBtn = target.closest("#export-button");
+  if (!exportBtn || exportBtn.hasAttribute("disabled")) {
+    return;
+  }
   if (!allCreators.length || !lastQuery) {
     return;
   }
@@ -44,10 +53,11 @@ exportButton.addEventListener("click", () => {
 
 async function runSearch(query) {
   setLoading(true);
-  showStatus("Searching YouTube…");
-  resultsEl.hidden = true;
-  resultsEl.innerHTML = "";
-  exportButton.disabled = true;
+  hideStatus();
+  if (idleHint) {
+    idleHint.hidden = true;
+  }
+  showSkeletons();
   allCreators = [];
 
   try {
@@ -71,10 +81,11 @@ async function runSearch(query) {
     resultCount = data.result_count || 0;
     allCreators = Array.isArray(data.creators) ? data.creators : [];
     applyView();
-    exportButton.disabled = allCreators.length === 0;
   } catch (error) {
     lastQuery = "";
     allCreators = [];
+    resultsEl.hidden = true;
+    resultsEl.innerHTML = "";
     showStatus(error instanceof Error ? error.message : "Something went wrong.", true);
   } finally {
     setLoading(false);
@@ -206,6 +217,9 @@ async function enrichVisible(visible) {
       const limit = Number(limitSelect.value) || 5;
       const nextVisible = sortCreators(allCreators, sort).slice(0, limit);
       renderResults(lastQuery, resultCount, sort, nextVisible, allCreators.length);
+      if (enrichActive) {
+        showEnrichHint(true);
+      }
     }
   } finally {
     if (token === enrichToken) {
@@ -215,6 +229,7 @@ async function enrichVisible(visible) {
 }
 
 function showEnrichHint(show) {
+  enrichActive = show;
   let hint = document.getElementById("enrich-hint");
   if (!show) {
     if (hint) {
@@ -222,19 +237,37 @@ function showEnrichHint(show) {
     }
     return;
   }
-  if (!hint) {
+  if (!hint && !resultsEl.hidden) {
     hint = document.createElement("p");
     hint.id = "enrich-hint";
     hint.className = "enrich-hint";
-    hint.textContent = "Loading contacts…";
-    resultsEl.prepend(hint);
+    hint.textContent = "Finding contacts…";
+    const toolbar = resultsEl.querySelector(".results-toolbar");
+    if (toolbar) {
+      toolbar.insertAdjacentElement("afterend", hint);
+    } else {
+      resultsEl.prepend(hint);
+    }
   }
 }
 
 function setLoading(isLoading) {
   button.disabled = isLoading;
   input.disabled = isLoading;
+  sortSelect.disabled = isLoading;
+  limitSelect.disabled = isLoading;
   button.textContent = isLoading ? "Searching…" : "Search";
+}
+
+function showSkeletons() {
+  resultsEl.hidden = false;
+  resultsEl.innerHTML = `
+    <div class="skeleton-list" aria-hidden="true">
+      <div class="skeleton-card"></div>
+      <div class="skeleton-card"></div>
+      <div class="skeleton-card"></div>
+    </div>
+  `;
 }
 
 function showStatus(message, isError = false) {
@@ -252,12 +285,22 @@ function hideStatus() {
 function renderResults(query, videosAnalyzed, sort, visible, poolSize) {
   hideStatus();
   resultsEl.hidden = false;
+  const sortLabel =
+    sort === "subscribers" ? "subscribers" : sort === "views" ? "views" : "relevance";
+
   resultsEl.innerHTML = `
-    <h2 class="results-heading">Results for “${escapeHtml(query)}”</h2>
-    <p class="results-meta">
-      Top creators (India or unknown country) · ${videosAnalyzed} videos analyzed ·
-      pool ${poolSize} · sort: ${escapeHtml(sort)} · showing ${visible.length}
-    </p>
+    <div class="results-toolbar">
+      <div>
+        <h2 class="results-heading">Results for “${escapeHtml(query)}”</h2>
+        <p class="results-meta">
+          India or unknown country · ${videosAnalyzed} videos analyzed ·
+          pool ${poolSize} · ${escapeHtml(sortLabel)} · showing ${visible.length}
+        </p>
+      </div>
+      <button id="export-button" class="btn btn-ghost" type="button">
+        Export CSV
+      </button>
+    </div>
     <div class="creator-list">
       ${visible.map(renderCreator).join("")}
     </div>
@@ -265,48 +308,14 @@ function renderResults(query, videosAnalyzed, sort, visible, poolSize) {
 }
 
 function renderCreator(creator) {
-  const subscribers =
+  const subsValue =
     creator.subscribers == null
-      ? "Subscribers hidden"
-      : `${formatCompactNumber(creator.subscribers)} subscribers`;
-
+      ? "Hidden"
+      : formatCompactNumber(creator.subscribers);
   const countryLabel = creator.country || "Unknown";
   const avatar = creator.thumbnail
     ? `<img class="creator-avatar" src="${escapeAttr(creator.thumbnail)}" alt="" />`
     : `<div class="avatar-placeholder" aria-hidden="true"></div>`;
-
-  const contactBits = [];
-  if (creator.email) {
-    contactBits.push(
-      `<p>Email: <a href="mailto:${escapeAttr(creator.email)}">${escapeHtml(
-        creator.email
-      )}</a></p>`
-    );
-  }
-  if (creator.phone) {
-    contactBits.push(`<p>Phone: ${escapeHtml(creator.phone)}</p>`);
-  }
-  if (creator.socials && creator.socials.length > 0) {
-    const allowed = new Set(["x", "telegram", "instagram"]);
-    const labels = { x: "X", telegram: "Telegram", instagram: "Instagram" };
-    const links = creator.socials
-      .filter((s) => allowed.has(String(s.platform || "").toLowerCase()))
-      .map((s) => {
-        const platform = String(s.platform || "").toLowerCase();
-        const label = labels[platform] || platform;
-        const href = s.value.startsWith("http") ? s.value : null;
-        if (href) {
-          return `<a href="${escapeAttr(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(
-            label
-          )}</a>`;
-        }
-        return `<span>${escapeHtml(label)}: ${escapeHtml(s.value)}</span>`;
-      })
-      .join(" · ");
-    if (links) {
-      contactBits.push(`<p class="socials">Socials: ${links}</p>`);
-    }
-  }
 
   return `
     <article class="creator-card" data-channel-id="${escapeAttr(creator.channel_id)}">
@@ -317,15 +326,24 @@ function renderCreator(creator) {
             <h3>${escapeHtml(creator.channel_name)}</h3>
             <span class="badge">${escapeHtml(countryLabel)}</span>
           </div>
-          <p>${subscribers}</p>
-          <p>${creator.relevant_video_count} relevant video${
-            creator.relevant_video_count === 1 ? "" : "s"
-          }</p>
-          <p>${formatCompactNumber(creator.combined_views)} combined views</p>
-          ${contactBits.join("")}
+          <ul class="metrics">
+            <li>
+              <span class="label">Subscribers</span>
+              <span class="value">${escapeHtml(subsValue)}</span>
+            </li>
+            <li>
+              <span class="label">Relevant videos</span>
+              <span class="value">${creator.relevant_video_count}</span>
+            </li>
+            <li>
+              <span class="label">Combined views</span>
+              <span class="value">${formatCompactNumber(creator.combined_views)}</span>
+            </li>
+          </ul>
+          ${renderContacts(creator)}
           <a class="channel-link" href="${escapeAttr(
             creator.channel_url
-          )}" target="_blank" rel="noopener noreferrer">View Channel →</a>
+          )}" target="_blank" rel="noopener noreferrer">View channel →</a>
         </div>
       </div>
       <ul class="video-list">
@@ -333,6 +351,48 @@ function renderCreator(creator) {
       </ul>
     </article>
   `;
+}
+
+function renderContacts(creator) {
+  const chips = [];
+
+  if (creator.email) {
+    chips.push(
+      `<a class="chip" href="mailto:${escapeAttr(creator.email)}">${escapeHtml(
+        creator.email
+      )}</a>`
+    );
+  }
+  if (creator.phone) {
+    chips.push(`<span class="chip">${escapeHtml(creator.phone)}</span>`);
+  }
+  if (creator.socials && creator.socials.length > 0) {
+    const allowed = new Set(["x", "telegram", "instagram"]);
+    const labels = { x: "X", telegram: "Telegram", instagram: "Instagram" };
+    for (const s of creator.socials) {
+      const platform = String(s.platform || "").toLowerCase();
+      if (!allowed.has(platform)) {
+        continue;
+      }
+      const label = labels[platform] || platform;
+      if (s.value.startsWith("http")) {
+        chips.push(
+          `<a class="chip" href="${escapeAttr(
+            s.value
+          )}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`
+        );
+      } else {
+        chips.push(
+          `<span class="chip">${escapeHtml(label)}: ${escapeHtml(s.value)}</span>`
+        );
+      }
+    }
+  }
+
+  if (chips.length === 0) {
+    return "";
+  }
+  return `<div class="contacts">${chips.join("")}</div>`;
 }
 
 function renderVideo(video) {
